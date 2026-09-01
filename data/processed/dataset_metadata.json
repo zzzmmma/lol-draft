@@ -1,9 +1,10 @@
 {
-  "processed_at": "2026-09-01T17:15:02.802405",
+  "processed_at": "2026-09-01T21:19:44.073647",
   "source": "Oracle's Elixir",
-  "source_page": "https://oracleselixir.com/tools/downloads",
-  "source_file": "data/raw/2026_LoL_esports_match_data_from_OraclesElixir.csv",
+  "oracle_google_drive_file_id": "1hnpbrUpBMS1TZI7IovfpKeZfWJH1Aptm",
+  "source_file": "C:\\Users\\user\\Desktop\\새 폴더\\lol-draft\\data\\raw\\2026_LoL_esports_match_data_from_OraclesElixir.csv",
   "source_sha256": "d79ffe31f61e8c2effaf79bc3c27836a8c87cb3921a8e9275a8a0416a44ea294",
+  "source_updated_this_run": false,
   "year": 2026,
   "league": "LCK",
   "fearless_enabled": true,
@@ -11,6 +12,6 @@
   "games": 469,
   "draft_actions": 9380,
   "training_samples": 9380,
-  "champion_history_rows": 4690,
+  "champion_meta_rows": 9380,
   "failed_games": 0
 }

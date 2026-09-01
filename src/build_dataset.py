@@ -1,61 +1,113 @@
 from pathlib import Path
 from datetime import datetime
-import pandas as pd
-import json
 import hashlib
-import shutil
+import json
 import re
+import shutil
+
+import gdown
+import pandas as pd
 
 
 # ============================================================
-# 설정
+# 0. 기본 설정
 # ============================================================
 
 TARGET_YEAR = 2026
 TARGET_LEAGUE = "LCK"
 
-# 현재 수집 범위를 Fearless Draft 적용 이후로 잡는다면 True
-USE_FEARLESS = True
+# 실행할 때마다 Oracle 최신 파일 확인
+AUTO_DOWNLOAD = True
 
-# 같은 두 팀의 경기가 이 시간보다 멀리 떨어져 있으면
-# 다른 시리즈로 판단
-MAX_SERIES_GAP_HOURS = 12
-
-# Oracle 파일이 이전 실행과 동일하면
-# 다시 데이터셋을 만들지 않음
+# 개발 중에는 False 권장
+# 나중에 완성 후 자동 운영할 때 True
 SKIP_IF_SOURCE_UNCHANGED = False
 
+# 2026 LCK Fearless Draft 사용
+USE_FEARLESS = True
+
+# 같은 두 팀의 경기 간격이 너무 멀면 다른 시리즈로 판단
+MAX_SERIES_GAP_HOURS = 12
+
 
 # ============================================================
-# 경로
+# Oracle's Elixir 2026 Google Drive
 # ============================================================
 
-RAW_DIR = Path("data/raw")
-ARCHIVE_DIR = Path("data/raw_archive")
-PROCESSED_DIR = Path("data/processed")
+ORACLE_FILE_ID = (
+    "1hnpbrUpBMS1TZI7IovfpKeZfWJH1Aptm"
+)
 
-RAW_DIR.mkdir(parents=True, exist_ok=True)
-ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
-PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+ORACLE_DIRECT_URL = (
+    f"https://drive.google.com/uc?id={ORACLE_FILE_ID}"
+)
+
+
+# ============================================================
+# 1. 프로젝트 경로 설정
+#
+# build_dataset.py가
+#
+# lol-draft/src/build_dataset.py
+#
+# 에 있어도 정상적으로 프로젝트 루트를 찾음
+# ============================================================
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+if SCRIPT_DIR.name.lower() == "src":
+    PROJECT_ROOT = SCRIPT_DIR.parent
+else:
+    PROJECT_ROOT = SCRIPT_DIR
+
+
+DATA_DIR = PROJECT_ROOT / "data"
+
+RAW_DIR = DATA_DIR / "raw"
+
+RAW_ARCHIVE_DIR = (
+    DATA_DIR / "raw_archive"
+)
+
+PROCESSED_DIR = (
+    DATA_DIR / "processed"
+)
+
+
+RAW_DIR.mkdir(
+    parents=True,
+    exist_ok=True
+)
+
+RAW_ARCHIVE_DIR.mkdir(
+    parents=True,
+    exist_ok=True
+)
+
+PROCESSED_DIR.mkdir(
+    parents=True,
+    exist_ok=True
+)
 
 
 RAW_FILE = (
     RAW_DIR
-    / f"{TARGET_YEAR}_LoL_esports_match_data_from_OraclesElixir.csv"
+    / (
+        f"{TARGET_YEAR}_"
+        "LoL_esports_match_data_"
+        "from_OraclesElixir.csv"
+    )
 )
+
 
 METADATA_FILE = (
     PROCESSED_DIR
     / "dataset_metadata.json"
 )
 
-SOURCE_PAGE = (
-    "https://oracleselixir.com/tools/downloads"
-)
-
 
 # ============================================================
-# 기본 함수
+# 2. 기본 유틸 함수
 # ============================================================
 
 def clean_value(value):
@@ -74,7 +126,10 @@ def clean_value(value):
 def find_column(df, *names):
 
     lower_map = {
-        column.lower(): column
+
+        str(column).lower():
+            column
+
         for column in df.columns
     }
 
@@ -83,15 +138,23 @@ def find_column(df, *names):
         if name in df.columns:
             return name
 
-        if name.lower() in lower_map:
+        lower_name = (
+            name.lower()
+        )
+
+        if lower_name in lower_map:
+
             return lower_map[
-                name.lower()
+                lower_name
             ]
 
     return None
 
 
-def win_rate(wins, games):
+def safe_win_rate(
+    wins,
+    games
+):
 
     if games == 0:
         return None
@@ -99,400 +162,21 @@ def win_rate(wins, games):
     return wins / games
 
 
-# ============================================================
-# 파일 SHA256
-# ============================================================
-
-def calculate_sha256(path):
-
-    sha = hashlib.sha256()
-
-    with open(path, "rb") as file:
-
-        while True:
-
-            chunk = file.read(
-                1024 * 1024
-            )
-
-            if not chunk:
-                break
-
-            sha.update(chunk)
-
-    return sha.hexdigest()
-
-
-# ============================================================
-# 이전 데이터와 같은지 확인
-# ============================================================
-
-def source_is_unchanged(
-    current_hash
+def recent_win_rate(
+    history,
+    n
 ):
 
-    if not METADATA_FILE.exists():
-        return False
+    recent = history[-n:]
 
-    try:
+    if not recent:
+        return None
 
-        with open(
-            METADATA_FILE,
-            "r",
-            encoding="utf-8"
-        ) as file:
-
-            metadata = json.load(file)
-
-        previous_hash = (
-            metadata.get(
-                "source_sha256"
-            )
-        )
-
-        return (
-            previous_hash
-            == current_hash
-        )
-
-    except Exception:
-
-        return False
-
-
-# ============================================================
-# Oracle 원본 보관
-# ============================================================
-
-def archive_raw_file(
-    path,
-    file_hash
-):
-
-    today = datetime.now().strftime(
-        "%Y%m%d"
+    return (
+        sum(recent)
+        / len(recent)
     )
 
-    filename = (
-        f"{TARGET_YEAR}_OE_"
-        f"{today}_"
-        f"{file_hash[:8]}.csv"
-    )
-
-    archive_path = (
-        ARCHIVE_DIR
-        / filename
-    )
-
-    if not archive_path.exists():
-
-        shutil.copy2(
-            path,
-            archive_path
-        )
-
-        print(
-            "원본 백업:",
-            archive_path
-        )
-
-
-# ============================================================
-# 챔피언 5개 가져오기
-# ============================================================
-
-def get_champions(
-    row,
-    prefix
-):
-
-    champions = []
-
-    for i in range(1, 6):
-
-        column = (
-            f"{prefix}{i}"
-        )
-
-        if column not in row.index:
-
-            champions.append(None)
-
-        else:
-
-            champions.append(
-                clean_value(
-                    row[column]
-                )
-            )
-
-    return champions
-
-
-# ============================================================
-# First Pick 판별
-# ============================================================
-
-def is_first_pick(
-    row,
-    column
-):
-
-    if column is None:
-        return False
-
-    value = row[column]
-
-    if pd.isna(value):
-        return False
-
-    value = (
-        str(value)
-        .strip()
-        .lower()
-    )
-
-    return value in {
-        "1",
-        "1.0",
-        "true",
-        "yes"
-    }
-
-
-# ============================================================
-# 실제 Draft 20단계 복원
-# ============================================================
-
-def reconstruct_draft_actions(
-    blue_bans,
-    red_bans,
-    blue_picks,
-    red_picks,
-    first_pick_side
-):
-
-    """
-    우리가 영상으로 검증한 순서.
-
-    First Pick = BLUE
-
-    1차 BAN
-    B R B R B R
-
-    1차 PICK
-    B R R B B R
-
-    2차 BAN
-    R B R B
-
-    2차 PICK
-    R B B R
-
-
-    First Pick = RED
-
-    위 구조의 BLUE/RED 반대.
-    """
-
-    if first_pick_side == "BLUE":
-
-        first_side = "BLUE"
-        second_side = "RED"
-
-        first_bans = blue_bans
-        second_bans = red_bans
-
-        first_picks = blue_picks
-        second_picks = red_picks
-
-    elif first_pick_side == "RED":
-
-        first_side = "RED"
-        second_side = "BLUE"
-
-        first_bans = red_bans
-        second_bans = blue_bans
-
-        first_picks = red_picks
-        second_picks = blue_picks
-
-    else:
-
-        return []
-
-
-    actions = []
-
-
-    def add(
-        phase,
-        side,
-        action,
-        champion
-    ):
-
-        actions.append({
-
-            "phase": phase,
-
-            "side": side,
-
-            "action": action,
-
-            "champion": champion
-        })
-
-
-    # --------------------------------------------------------
-    # 1차 밴
-    # --------------------------------------------------------
-
-    for i in range(3):
-
-        add(
-            "BAN_PHASE_1",
-            first_side,
-            "BAN",
-            first_bans[i]
-        )
-
-        add(
-            "BAN_PHASE_1",
-            second_side,
-            "BAN",
-            second_bans[i]
-        )
-
-
-    # --------------------------------------------------------
-    # 1차 픽
-    # --------------------------------------------------------
-
-    add(
-        "PICK_PHASE_1",
-        first_side,
-        "PICK",
-        first_picks[0]
-    )
-
-    add(
-        "PICK_PHASE_1",
-        second_side,
-        "PICK",
-        second_picks[0]
-    )
-
-    add(
-        "PICK_PHASE_1",
-        second_side,
-        "PICK",
-        second_picks[1]
-    )
-
-    add(
-        "PICK_PHASE_1",
-        first_side,
-        "PICK",
-        first_picks[1]
-    )
-
-    add(
-        "PICK_PHASE_1",
-        first_side,
-        "PICK",
-        first_picks[2]
-    )
-
-    add(
-        "PICK_PHASE_1",
-        second_side,
-        "PICK",
-        second_picks[2]
-    )
-
-
-    # --------------------------------------------------------
-    # 2차 밴
-    # --------------------------------------------------------
-
-    add(
-        "BAN_PHASE_2",
-        second_side,
-        "BAN",
-        second_bans[3]
-    )
-
-    add(
-        "BAN_PHASE_2",
-        first_side,
-        "BAN",
-        first_bans[3]
-    )
-
-    add(
-        "BAN_PHASE_2",
-        second_side,
-        "BAN",
-        second_bans[4]
-    )
-
-    add(
-        "BAN_PHASE_2",
-        first_side,
-        "BAN",
-        first_bans[4]
-    )
-
-
-    # --------------------------------------------------------
-    # 2차 픽
-    # --------------------------------------------------------
-
-    add(
-        "PICK_PHASE_2",
-        second_side,
-        "PICK",
-        second_picks[3]
-    )
-
-    add(
-        "PICK_PHASE_2",
-        first_side,
-        "PICK",
-        first_picks[3]
-    )
-
-    add(
-        "PICK_PHASE_2",
-        first_side,
-        "PICK",
-        first_picks[4]
-    )
-
-    add(
-        "PICK_PHASE_2",
-        second_side,
-        "PICK",
-        second_picks[4]
-    )
-
-
-    # 순서
-    for order, action in enumerate(
-        actions,
-        start=1
-    ):
-
-        action["order"] = order
-
-
-    return actions
-
-
-# ============================================================
-# Series용 이름 정리
-# ============================================================
 
 def safe_name(text):
 
@@ -508,86 +192,918 @@ def safe_name(text):
 
 
 # ============================================================
-# Oracle → 경기 단위 데이터
+# result 값 처리
+# ============================================================
+
+def parse_result(value):
+
+    if pd.isna(value):
+
+        raise ValueError(
+            "result 값이 비어 있음"
+        )
+
+    text = (
+        str(value)
+        .strip()
+        .lower()
+    )
+
+
+    if text in {
+        "1",
+        "1.0",
+        "true",
+        "win",
+        "w"
+    }:
+
+        return 1
+
+
+    if text in {
+        "0",
+        "0.0",
+        "false",
+        "loss",
+        "lose",
+        "l"
+    }:
+
+        return 0
+
+
+    try:
+
+        numeric = int(
+            float(text)
+        )
+
+        if numeric in {
+            0,
+            1
+        }:
+
+            return numeric
+
+    except ValueError:
+
+        pass
+
+
+    raise ValueError(
+        f"알 수 없는 result 값: {value}"
+    )
+
+
+# ============================================================
+# 3. CSV 안전 저장
+#
+# Windows에서 Excel이 CSV를 열고 있으면
+# PermissionError가 발생한다.
+#
+# 그 경우 프로그램을 종료하지 않고
+# 새로운 timestamp 파일로 저장한다.
+# ============================================================
+
+def safe_write_csv(
+    df,
+    path
+):
+
+    path = Path(path)
+
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+
+    try:
+
+        df.to_csv(
+            path,
+            index=False,
+            encoding="utf-8-sig"
+        )
+
+        return path
+
+
+    except PermissionError:
+
+        timestamp = (
+            datetime.now()
+            .strftime(
+                "%Y%m%d_%H%M%S"
+            )
+        )
+
+
+        fallback = (
+
+            path.parent
+
+            / (
+                f"{path.stem}_"
+                f"{timestamp}_NEW"
+                f"{path.suffix}"
+            )
+        )
+
+
+        df.to_csv(
+            fallback,
+            index=False,
+            encoding="utf-8-sig"
+        )
+
+
+        print()
+        print(
+            "[주의]"
+        )
+
+        print(
+            f"{path.name} 파일이 "
+            "Excel 등에 열려 있어서 "
+            "덮어쓰지 못했습니다."
+        )
+
+        print(
+            "대신 다음 파일에 저장했습니다:"
+        )
+
+        print(
+            fallback
+        )
+
+
+        return fallback
+
+
+# ============================================================
+# 4. SHA256
+# ============================================================
+
+def calculate_sha256(path):
+
+    sha = hashlib.sha256()
+
+
+    with open(
+        path,
+        "rb"
+    ) as file:
+
+        while True:
+
+            chunk = file.read(
+                1024 * 1024
+            )
+
+            if not chunk:
+                break
+
+            sha.update(
+                chunk
+            )
+
+
+    return sha.hexdigest()
+
+
+# ============================================================
+# 이전 실행과 Oracle 파일이 같은지 확인
+# ============================================================
+
+def source_is_unchanged(
+    current_hash
+):
+
+    if not METADATA_FILE.exists():
+        return False
+
+
+    try:
+
+        with open(
+            METADATA_FILE,
+            "r",
+            encoding="utf-8"
+        ) as file:
+
+            metadata = json.load(
+                file
+            )
+
+
+        return (
+
+            metadata.get(
+                "source_sha256"
+            )
+
+            == current_hash
+        )
+
+
+    except Exception:
+
+        return False
+
+
+# ============================================================
+# 5. 이전 Oracle 원본 백업
+# ============================================================
+
+def archive_raw_file(path):
+
+    if not path.exists():
+        return None
+
+
+    file_hash = (
+        calculate_sha256(
+            path
+        )
+    )
+
+
+    timestamp = (
+        datetime.now()
+        .strftime(
+            "%Y%m%d_%H%M%S"
+        )
+    )
+
+
+    archive_path = (
+
+        RAW_ARCHIVE_DIR
+
+        / (
+            f"{TARGET_YEAR}_OE_"
+            f"{timestamp}_"
+            f"{file_hash[:8]}.csv"
+        )
+    )
+
+
+    shutil.copy2(
+        path,
+        archive_path
+    )
+
+
+    print(
+        "이전 Oracle 원본 백업:",
+        archive_path
+    )
+
+
+    return archive_path
+
+
+# ============================================================
+# 6. Oracle 최신 CSV 자동 다운로드
+# ============================================================
+
+def download_latest_oracle_data():
+
+    print()
+    print("========================================")
+    print("Oracle 최신 데이터 다운로드")
+    print("========================================")
+
+    temp_file = (
+        RAW_DIR
+        / "oracle_download_temp.csv"
+    )
+
+    if temp_file.exists():
+        temp_file.unlink()
+
+    print(
+        "2026 Oracle 파일 다운로드 중..."
+    )
+
+    try:
+
+        downloaded_path = gdown.download(
+            id=ORACLE_FILE_ID,
+            output=str(temp_file),
+            quiet=False
+        )
+
+    except Exception as e:
+
+        error_message = str(e)
+
+        # ================================================
+        # Google Drive 다운로드 쿼터 초과
+        # ================================================
+
+        quota_keywords = [
+            "Too many users",
+            "download quota",
+            "Quota exceeded",
+            "Failed to retrieve file url"
+        ]
+
+        if any(
+            keyword.lower()
+            in error_message.lower()
+            for keyword
+            in quota_keywords
+        ):
+
+            print()
+            print(
+                "[Oracle 다운로드 제한]"
+            )
+
+            print(
+                "Google Drive 다운로드 쿼터가 "
+                "초과되었습니다."
+            )
+
+            print(
+                "기존 Oracle 원본이 있으면 "
+                "그 파일을 사용합니다."
+            )
+
+            temp_file.unlink(
+                missing_ok=True
+            )
+
+            return False
+
+        raise
+
+
+    if (
+        downloaded_path is None
+        or not temp_file.exists()
+    ):
+
+        print()
+        print(
+            "Oracle 다운로드 실패"
+        )
+
+        return False
+
+
+    # ================================================
+    # CSV 확인
+    # ================================================
+
+    try:
+
+        test_df = pd.read_csv(
+            temp_file,
+            nrows=5
+        )
+
+    except Exception as e:
+
+        temp_file.unlink(
+            missing_ok=True
+        )
+
+        print(
+            "다운로드한 파일이 "
+            "정상 CSV가 아닙니다."
+        )
+
+        print(e)
+
+        return False
+
+
+    required_columns = {
+        "gameid",
+        "league",
+        "side"
+    }
+
+
+    if not required_columns.issubset(
+        set(test_df.columns)
+    ):
+
+        temp_file.unlink(
+            missing_ok=True
+        )
+
+        print(
+            "Oracle CSV 필수 컬럼이 없습니다."
+        )
+
+        return False
+
+
+    # ================================================
+    # Hash 비교
+    # ================================================
+
+    new_hash = calculate_sha256(
+        temp_file
+    )
+
+
+    print(
+        "다운로드 파일 SHA256:",
+        new_hash[:16]
+    )
+
+
+    if RAW_FILE.exists():
+
+        old_hash = calculate_sha256(
+            RAW_FILE
+        )
+
+
+        print(
+            "기존 파일 SHA256:",
+            old_hash[:16]
+        )
+
+
+        # Oracle 파일 변경 없음
+        if new_hash == old_hash:
+
+            print(
+                "Oracle 원본 데이터 변경 없음"
+            )
+
+            temp_file.unlink()
+
+            return False
+
+
+        # 기존 파일 백업
+        archive_raw_file(
+            RAW_FILE
+        )
+
+
+    # ================================================
+    # 최신 파일로 교체
+    # ================================================
+
+    shutil.move(
+        str(temp_file),
+        str(RAW_FILE)
+    )
+
+
+    print()
+    print(
+        "Oracle 최신 데이터 다운로드 성공"
+    )
+
+    print(
+        "새 원본으로 교체했습니다."
+    )
+
+
+    return True
+
+
+# ============================================================
+# 7. 챔피언 Ban / Pick 데이터
+# ============================================================
+
+def get_champions(
+    row,
+    prefix
+):
+
+    champions = []
+
+
+    for number in range(
+        1,
+        6
+    ):
+
+        column = (
+            f"{prefix}{number}"
+        )
+
+
+        if column not in row.index:
+
+            champions.append(
+                None
+            )
+
+            continue
+
+
+        champions.append(
+
+            clean_value(
+                row[column]
+            )
+        )
+
+
+    return champions
+
+
+# ============================================================
+# First Pick
+# ============================================================
+
+def is_first_pick(
+    row,
+    column
+):
+
+    if column is None:
+        return False
+
+
+    value = row[
+        column
+    ]
+
+
+    if pd.isna(value):
+        return False
+
+
+    value = (
+
+        str(value)
+        .strip()
+        .lower()
+    )
+
+
+    return value in {
+
+        "1",
+        "1.0",
+        "true",
+        "yes"
+    }
+
+
+# ============================================================
+# 8. 실제 20단계 밴픽 순서 복원
+#
+# 우리가 영상으로 확인했던 순서
+#
+# First Pick BLUE
+#
+# BAN1:
+# B R B R B R
+#
+# PICK1:
+# B R R B B R
+#
+# BAN2:
+# R B R B
+#
+# PICK2:
+# R B B R
+#
+# First Pick RED면 반대
+# ============================================================
+
+def reconstruct_draft_actions(
+
+    blue_bans,
+    red_bans,
+
+    blue_picks,
+    red_picks,
+
+    first_pick_side
+):
+
+
+    if first_pick_side == "BLUE":
+
+        first_side = "BLUE"
+        second_side = "RED"
+
+        first_bans = blue_bans
+        second_bans = red_bans
+
+        first_picks = blue_picks
+        second_picks = red_picks
+
+
+    elif first_pick_side == "RED":
+
+        first_side = "RED"
+        second_side = "BLUE"
+
+        first_bans = red_bans
+        second_bans = blue_bans
+
+        first_picks = red_picks
+        second_picks = blue_picks
+
+
+    else:
+
+        return []
+
+
+    actions = []
+
+
+    def add_action(
+
+        phase,
+        side,
+        action,
+        champion
+    ):
+
+        actions.append({
+
+            "phase":
+                phase,
+
+            "side":
+                side,
+
+            "action":
+                action,
+
+            "champion":
+                champion
+        })
+
+
+    # ========================================================
+    # 1차 밴
+    # ========================================================
+
+    for i in range(3):
+
+        add_action(
+            "BAN_PHASE_1",
+            first_side,
+            "BAN",
+            first_bans[i]
+        )
+
+        add_action(
+            "BAN_PHASE_1",
+            second_side,
+            "BAN",
+            second_bans[i]
+        )
+
+
+    # ========================================================
+    # 1차 픽
+    # ========================================================
+
+    add_action(
+        "PICK_PHASE_1",
+        first_side,
+        "PICK",
+        first_picks[0]
+    )
+
+
+    add_action(
+        "PICK_PHASE_1",
+        second_side,
+        "PICK",
+        second_picks[0]
+    )
+
+
+    add_action(
+        "PICK_PHASE_1",
+        second_side,
+        "PICK",
+        second_picks[1]
+    )
+
+
+    add_action(
+        "PICK_PHASE_1",
+        first_side,
+        "PICK",
+        first_picks[1]
+    )
+
+
+    add_action(
+        "PICK_PHASE_1",
+        first_side,
+        "PICK",
+        first_picks[2]
+    )
+
+
+    add_action(
+        "PICK_PHASE_1",
+        second_side,
+        "PICK",
+        second_picks[2]
+    )
+
+
+    # ========================================================
+    # 2차 밴
+    # ========================================================
+
+    add_action(
+        "BAN_PHASE_2",
+        second_side,
+        "BAN",
+        second_bans[3]
+    )
+
+
+    add_action(
+        "BAN_PHASE_2",
+        first_side,
+        "BAN",
+        first_bans[3]
+    )
+
+
+    add_action(
+        "BAN_PHASE_2",
+        second_side,
+        "BAN",
+        second_bans[4]
+    )
+
+
+    add_action(
+        "BAN_PHASE_2",
+        first_side,
+        "BAN",
+        first_bans[4]
+    )
+
+
+    # ========================================================
+    # 2차 픽
+    # ========================================================
+
+    add_action(
+        "PICK_PHASE_2",
+        second_side,
+        "PICK",
+        second_picks[3]
+    )
+
+
+    add_action(
+        "PICK_PHASE_2",
+        first_side,
+        "PICK",
+        first_picks[3]
+    )
+
+
+    add_action(
+        "PICK_PHASE_2",
+        first_side,
+        "PICK",
+        first_picks[4]
+    )
+
+
+    add_action(
+        "PICK_PHASE_2",
+        second_side,
+        "PICK",
+        second_picks[4]
+    )
+
+
+    # ========================================================
+    # 순서 번호
+    # ========================================================
+
+    for order, action in enumerate(
+        actions,
+        start=1
+    ):
+
+        action[
+            "order"
+        ] = order
+
+
+    return actions
+
+
+# ============================================================
+# 9. Oracle → LCK 경기 단위 데이터
 # ============================================================
 
 def build_games(df):
+
 
     league_col = find_column(
         df,
         "league"
     )
 
+
     year_col = find_column(
         df,
         "year"
     )
 
-    game_id_col = find_column(
+
+    gameid_col = find_column(
         df,
         "gameid"
     )
+
 
     date_col = find_column(
         df,
         "date"
     )
 
+
     game_number_col = find_column(
         df,
         "game"
     )
+
 
     position_col = find_column(
         df,
         "position"
     )
 
+
     side_col = find_column(
         df,
         "side"
     )
 
+
     team_col = find_column(
         df,
-        "teamname"
+        "teamname",
+        "team"
     )
 
-    team_id_col = find_column(
+
+    teamid_col = find_column(
         df,
         "teamid"
     )
+
 
     result_col = find_column(
         df,
         "result"
     )
 
-    first_pick_col = find_column(
+
+    firstpick_col = find_column(
         df,
-        "firstPick",
-        "firstpick"
+        "firstpick",
+        "firstPick"
     )
+
 
     patch_col = find_column(
         df,
         "patch"
     )
 
+
     split_col = find_column(
         df,
         "split"
     )
+
 
     playoffs_col = find_column(
         df,
         "playoffs"
     )
 
+
     completeness_col = find_column(
         df,
         "datacompleteness"
     )
+
 
     url_col = find_column(
         df,
@@ -595,32 +1111,62 @@ def build_games(df):
     )
 
 
+    tournament_col = find_column(
+        df,
+        "tournament",
+        "tournamentname"
+    )
+
+
+    bestof_col = find_column(
+        df,
+        "bestof",
+        "best_of"
+    )
+
+
+    # ========================================================
+    # 필수 컬럼 확인
+    # ========================================================
+
     required = {
 
-        "league": league_col,
+        "league":
+            league_col,
 
-        "gameid": game_id_col,
+        "gameid":
+            gameid_col,
 
-        "date": date_col,
+        "date":
+            date_col,
 
-        "game": game_number_col,
+        "game":
+            game_number_col,
 
-        "position": position_col,
+        "position":
+            position_col,
 
-        "side": side_col,
+        "side":
+            side_col,
 
-        "teamname": team_col,
+        "teamname":
+            team_col,
 
-        "result": result_col,
+        "result":
+            result_col,
 
-        "firstPick": first_pick_col
+        "firstpick":
+            firstpick_col
     }
 
 
     missing = [
+
         name
+
         for name, column
         in required.items()
+
         if column is None
     ]
 
@@ -628,97 +1174,153 @@ def build_games(df):
     if missing:
 
         raise ValueError(
-            "필수 컬럼 없음: "
-            + str(missing)
+
+            "Oracle CSV 필수 컬럼 없음: "
+
+            + str(
+                missing
+            )
         )
 
 
+    # ========================================================
+    # Ban / Pick 컬럼 확인
+    # ========================================================
+
+    for prefix in (
+        "ban",
+        "pick"
+    ):
+
+        for i in range(
+            1,
+            6
+        ):
+
+            column = (
+                f"{prefix}{i}"
+            )
+
+
+            if column not in df.columns:
+
+                raise ValueError(
+                    f"Oracle CSV 컬럼 없음: "
+                    f"{column}"
+                )
+
+
+    # ========================================================
+    # 날짜 처리
+    # ========================================================
+
     df = df.copy()
 
-    df[date_col] = pd.to_datetime(
-        df[date_col],
+
+    df[
+        date_col
+    ] = pd.to_datetime(
+
+        df[
+            date_col
+        ],
+
         errors="coerce",
+
         utc=True
     )
 
 
-    # --------------------------------------------------------
-    # LCK
-    # --------------------------------------------------------
+    # ========================================================
+    # LCK 필터
+    # ========================================================
 
     lck = df[
-        df[league_col]
+
+        df[
+            league_col
+        ]
         .astype(str)
         .str.upper()
+
         == TARGET_LEAGUE
+
     ].copy()
 
 
-    # --------------------------------------------------------
-    # 연도
-    # --------------------------------------------------------
+    # ========================================================
+    # 2026 필터
+    # ========================================================
 
     if year_col:
 
-        year_values = pd.to_numeric(
-            lck[year_col],
+        years = pd.to_numeric(
+
+            lck[
+                year_col
+            ],
+
             errors="coerce"
         )
 
+
         lck = lck[
-            year_values
+
+            years
             == TARGET_YEAR
+
         ].copy()
+
 
     else:
 
         lck = lck[
-            lck[date_col].dt.year
+
+            lck[
+                date_col
+            ].dt.year
+
             == TARGET_YEAR
+
         ].copy()
 
 
     # ========================================================
-    # 중요:
-    # LCK 원본을 컬럼 하나도 삭제하지 않고 저장
+    # Team 행만
     # ========================================================
 
-    lck.to_csv(
-        PROCESSED_DIR
-        / "lck_raw_latest.csv",
-        index=False,
-        encoding="utf-8-sig"
-    )
-
-
-    # --------------------------------------------------------
-    # Team 행
-    # --------------------------------------------------------
-
     team_rows = lck[
-        lck[position_col]
+
+        lck[
+            position_col
+        ]
         .astype(str)
         .str.lower()
+
         == "team"
+
     ].copy()
 
 
     games = []
+
     failed = []
 
 
-    # 경기 후 통계 중 나중에 사용할 가능성이 높은 것들
-    # 존재하는 컬럼만 자동 보존
-    useful_postgame_columns = [
+    # ========================================================
+    # 나중에 승리 예측에 사용할 수도 있는
+    # 경기 후 통계
+    #
+    # 실제 Oracle에 있는 컬럼만 자동 저장
+    # ========================================================
+
+    postgame_candidates = [
 
         "gamelength",
 
         "kills",
         "deaths",
         "assists",
-
-        "teamkills",
-        "teamdeaths",
 
         "firstblood",
 
@@ -744,69 +1346,140 @@ def build_games(df):
 
         "totalgold",
         "earnedgold",
-        "goldspent"
+        "goldspent",
+
+        "golddiffat10",
+        "golddiffat15",
+        "golddiffat20",
+
+        "xpdiffat10",
+        "xpdiffat15",
+        "xpdiffat20",
+
+        "csdiffat10",
+        "csdiffat15",
+        "csdiffat20"
     ]
 
 
-    for game_id, group in (
-        team_rows.groupby(
-            game_id_col
+    actual_postgame_columns = {}
+
+
+    for candidate in (
+        postgame_candidates
+    ):
+
+        found = find_column(
+            df,
+            candidate
         )
+
+        if found:
+
+            actual_postgame_columns[
+                candidate
+            ] = found
+
+
+    # ========================================================
+    # gameid별 처리
+    # ========================================================
+
+    for game_id, group in (
+
+        team_rows.groupby(
+            gameid_col
+        )
+
     ):
 
         try:
 
             blue_rows = group[
-                group[side_col]
+
+                group[
+                    side_col
+                ]
                 .astype(str)
                 .str.lower()
+
                 == "blue"
+
             ]
 
+
             red_rows = group[
-                group[side_col]
+
+                group[
+                    side_col
+                ]
                 .astype(str)
                 .str.lower()
+
                 == "red"
+
             ]
 
 
             if (
+
                 len(blue_rows) != 1
+
                 or len(red_rows) != 1
+
             ):
 
                 raise ValueError(
-                    "Blue/Red 팀 행 오류"
+                    "Blue/Red team row가 "
+                    "각각 1개가 아님"
                 )
 
 
-            blue = blue_rows.iloc[0]
-            red = red_rows.iloc[0]
-
-
-            blue_bans = get_champions(
-                blue,
-                "ban"
+            blue = (
+                blue_rows.iloc[0]
             )
 
-            red_bans = get_champions(
-                red,
-                "ban"
-            )
-
-            blue_picks = get_champions(
-                blue,
-                "pick"
-            )
-
-            red_picks = get_champions(
-                red,
-                "pick"
+            red = (
+                red_rows.iloc[0]
             )
 
 
-            # 완성 경기만 Draft dataset에 사용
+            # =================================================
+            # Ban / Pick
+            # =================================================
+
+            blue_bans = (
+                get_champions(
+                    blue,
+                    "ban"
+                )
+            )
+
+
+            red_bans = (
+                get_champions(
+                    red,
+                    "ban"
+                )
+            )
+
+
+            blue_picks = (
+                get_champions(
+                    blue,
+                    "pick"
+                )
+            )
+
+
+            red_picks = (
+                get_champions(
+                    red,
+                    "pick"
+                )
+            )
+
+
             complete_draft = (
 
                 blue_bans
@@ -817,38 +1490,58 @@ def build_games(df):
 
 
             if any(
+
                 champion is None
+
                 for champion
                 in complete_draft
+
             ):
 
                 raise ValueError(
-                    "밴/픽 누락"
+                    "밴/픽 데이터 누락"
                 )
 
 
-            # ------------------------------------------------
+            # =================================================
             # First Pick
-            # ------------------------------------------------
+            # =================================================
 
-            blue_first = is_first_pick(
-                blue,
-                first_pick_col
-            )
-
-            red_first = is_first_pick(
-                red,
-                first_pick_col
+            blue_first = (
+                is_first_pick(
+                    blue,
+                    firstpick_col
+                )
             )
 
 
-            if blue_first and not red_first:
+            red_first = (
+                is_first_pick(
+                    red,
+                    firstpick_col
+                )
+            )
 
-                first_pick_side = "BLUE"
 
-            elif red_first and not blue_first:
+            if (
+                blue_first
+                and not red_first
+            ):
 
-                first_pick_side = "RED"
+                first_pick_side = (
+                    "BLUE"
+                )
+
+
+            elif (
+                red_first
+                and not blue_first
+            ):
+
+                first_pick_side = (
+                    "RED"
+                )
+
 
             else:
 
@@ -857,57 +1550,118 @@ def build_games(df):
                 )
 
 
-            # ------------------------------------------------
+            # =================================================
             # 승패
-            # ------------------------------------------------
+            # =================================================
 
-            blue_result = int(
-                float(
-                    blue[result_col]
+            blue_result = (
+                parse_result(
+                    blue[
+                        result_col
+                    ]
                 )
             )
 
-            red_result = int(
-                float(
-                    red[result_col]
+
+            red_result = (
+                parse_result(
+                    red[
+                        result_col
+                    ]
+                )
+            )
+
+
+            if (
+
+                blue_result
+                + red_result
+
+                != 1
+
+            ):
+
+                raise ValueError(
+                    "승패 result가 "
+                    "정상적이지 않음"
+                )
+
+
+            blue_team = (
+                clean_value(
+                    blue[
+                        team_col
+                    ]
+                )
+            )
+
+
+            red_team = (
+                clean_value(
+                    red[
+                        team_col
+                    ]
                 )
             )
 
 
             winner_side = (
+
                 "BLUE"
+
                 if blue_result == 1
+
                 else "RED"
             )
 
 
-            blue_team = clean_value(
-                blue[team_col]
-            )
-
-            red_team = clean_value(
-                red[team_col]
-            )
-
-
             winner_team = (
+
                 blue_team
-                if winner_side == "BLUE"
+
+                if winner_side
+                == "BLUE"
+
                 else red_team
             )
 
 
-            # ------------------------------------------------
-            # 기본 데이터
-            # ------------------------------------------------
+            game_number_value = (
+                pd.to_numeric(
+
+                    blue[
+                        game_number_col
+                    ],
+
+                    errors="coerce"
+                )
+            )
+
+
+            if pd.isna(
+                game_number_value
+            ):
+
+                raise ValueError(
+                    "game_number 없음"
+                )
+
+
+            # =================================================
+            # 경기 기본 데이터
+            # =================================================
 
             record = {
 
                 "game_id":
-                    str(game_id),
+                    str(
+                        game_id
+                    ),
 
                 "date":
-                    blue[date_col],
+                    blue[
+                        date_col
+                    ],
 
                 "league":
                     TARGET_LEAGUE,
@@ -915,71 +1669,130 @@ def build_games(df):
                 "year":
                     TARGET_YEAR,
 
-                "split":
+                "game_number":
+                    int(
+                        game_number_value
+                    ),
+
+                "tournament":
+
                     clean_value(
-                        blue[split_col]
+                        blue[
+                            tournament_col
+                        ]
                     )
+
+                    if tournament_col
+
+                    else None,
+
+                "split":
+
+                    clean_value(
+                        blue[
+                            split_col
+                        ]
+                    )
+
                     if split_col
+
                     else None,
 
                 "playoffs":
+
                     clean_value(
-                        blue[playoffs_col]
+                        blue[
+                            playoffs_col
+                        ]
                     )
+
                     if playoffs_col
+
                     else None,
 
-                "game_number":
-                    int(
-                        float(
-                            blue[
-                                game_number_col
-                            ]
-                        )
-                    ),
+                "best_of":
+
+                    clean_value(
+                        blue[
+                            bestof_col
+                        ]
+                    )
+
+                    if bestof_col
+
+                    else None,
 
                 "patch":
+
                     clean_value(
-                        blue[patch_col]
+                        blue[
+                            patch_col
+                        ]
                     )
+
                     if patch_col
+
                     else None,
 
                 "datacompleteness":
+
                     clean_value(
                         blue[
                             completeness_col
                         ]
                     )
+
                     if completeness_col
+
                     else None,
 
                 "source_url":
+
                     clean_value(
-                        blue[url_col]
+                        blue[
+                            url_col
+                        ]
                     )
+
                     if url_col
+
                     else None,
+
+
+                # --------------------------------------------
+                # 팀
+                # --------------------------------------------
 
                 "blue_team":
                     blue_team,
 
                 "blue_team_id":
+
                     clean_value(
-                        blue[team_id_col]
+                        blue[
+                            teamid_col
+                        ]
                     )
-                    if team_id_col
+
+                    if teamid_col
+
                     else None,
 
                 "red_team":
                     red_team,
 
                 "red_team_id":
+
                     clean_value(
-                        red[team_id_col]
+                        red[
+                            teamid_col
+                        ]
                     )
-                    if team_id_col
+
+                    if teamid_col
+
                     else None,
+
 
                 # --------------------------------------------
                 # 결과
@@ -997,8 +1810,9 @@ def build_games(df):
                 "winner_team":
                     winner_team,
 
+
                 # --------------------------------------------
-                # 드래프트
+                # Draft
                 # --------------------------------------------
 
                 "first_pick_side":
@@ -1006,9 +1820,9 @@ def build_games(df):
             }
 
 
-            # ------------------------------------------------
-            # Ban / Pick
-            # ------------------------------------------------
+            # =================================================
+            # Ban / Pick 저장
+            # =================================================
 
             for i in range(5):
 
@@ -1029,34 +1843,28 @@ def build_games(df):
                 ] = red_picks[i]
 
 
-            # ------------------------------------------------
-            # 경기 후 통계도 삭제하지 않고 추가
-            # ------------------------------------------------
+            # =================================================
+            # 경기 후 통계 보존
+            # =================================================
 
-            for column_name in (
-                useful_postgame_columns
+            for (
+                output_name,
+                source_column
+            ) in (
+                actual_postgame_columns.items()
             ):
 
-                actual_column = (
-                    find_column(
-                        df,
-                        column_name
-                    )
-                )
+                record[
+                    f"blue_{output_name}"
+                ] = blue[
+                    source_column
+                ]
 
-                if actual_column:
-
-                    record[
-                        f"blue_{column_name}"
-                    ] = blue[
-                        actual_column
-                    ]
-
-                    record[
-                        f"red_{column_name}"
-                    ] = red[
-                        actual_column
-                    ]
+                record[
+                    f"red_{output_name}"
+                ] = red[
+                    source_column
+                ]
 
 
             games.append(
@@ -1069,7 +1877,9 @@ def build_games(df):
             failed.append({
 
                 "game_id":
-                    game_id,
+                    str(
+                        game_id
+                    ),
 
                 "reason":
                     str(e)
@@ -1077,82 +1887,110 @@ def build_games(df):
 
 
     return (
-        pd.DataFrame(games),
-        pd.DataFrame(failed),
+
+        pd.DataFrame(
+            games
+        ),
+
+        pd.DataFrame(
+            failed
+        ),
+
         lck
     )
 
 
 # ============================================================
-# BO3 / BO5 시리즈 묶기
+# 10. BO3 / BO5 시리즈 묶기
 # ============================================================
 
-def assign_series_ids(
-    games
-):
+def assign_series_ids(games):
 
     games = games.copy()
 
 
-    def team_key(row, side):
+    def get_team_key(
+        row,
+        prefix
+    ):
 
         team_id = row[
-            f"{side}_team_id"
+            f"{prefix}_team_id"
         ]
+
 
         if team_id:
 
-            return str(team_id)
+            return str(
+                team_id
+            )
+
 
         return str(
             row[
-                f"{side}_team"
+                f"{prefix}_team"
             ]
         )
 
 
-    games["team_pair"] = games.apply(
+    games[
+        "team_pair"
+    ] = games.apply(
 
         lambda row:
 
-            "|".join(
-                sorted([
-                    team_key(
-                        row,
-                        "blue"
-                    ),
+        "|".join(
+            sorted([
 
-                    team_key(
-                        row,
-                        "red"
-                    )
-                ])
-            ),
+                get_team_key(
+                    row,
+                    "blue"
+                ),
+
+                get_team_key(
+                    row,
+                    "red"
+                )
+            ])
+        ),
 
         axis=1
     )
 
 
     games = games.sort_values(
+
         [
             "team_pair",
             "date",
             "game_number"
         ]
-    ).reset_index(drop=True)
+
+    ).reset_index(
+        drop=True
+    )
 
 
-    series_ids = {}
+    series_ids = [
+
+        None
+
+    ] * len(
+        games
+    )
 
 
-    for pair, group in games.groupby(
-        "team_pair",
-        sort=False
+    for _, group in (
+        games.groupby(
+            "team_pair",
+            sort=False
+        )
     ):
 
         series_number = 0
 
         previous_game_number = None
+
         previous_date = None
 
         current_series_id = None
@@ -1163,11 +2001,16 @@ def assign_series_ids(
         ):
 
             current_date = (
-                row["date"]
+                row[
+                    "date"
+                ]
             )
 
+
             game_number = (
-                row["game_number"]
+                row[
+                    "game_number"
+                ]
             )
 
 
@@ -1178,9 +2021,11 @@ def assign_series_ids(
 
                 new_series = True
 
+
             elif game_number == 1:
 
                 new_series = True
+
 
             elif (
                 game_number
@@ -1189,16 +2034,29 @@ def assign_series_ids(
 
                 new_series = True
 
+
             elif (
+
                 previous_date
                 is not None
-                and pd.notna(current_date)
+
+                and pd.notna(
+                    current_date
+                )
+
             ):
 
                 hours = (
-                    current_date
-                    - previous_date
-                ).total_seconds() / 3600
+
+                    (
+                        current_date
+                        - previous_date
+                    )
+                    .total_seconds()
+
+                    / 3600
+                )
+
 
                 if (
                     hours
@@ -1212,24 +2070,33 @@ def assign_series_ids(
 
                 series_number += 1
 
+
                 date_text = (
+
                     current_date.strftime(
                         "%Y%m%d"
                     )
+
                     if pd.notna(
                         current_date
                     )
+
                     else "unknown"
                 )
 
-                team_names = sorted([
+
+                teams = sorted([
 
                     safe_name(
-                        row["blue_team"]
+                        row[
+                            "blue_team"
+                        ]
                     ),
 
                     safe_name(
-                        row["red_team"]
+                        row[
+                            "red_team"
+                        ]
                     )
                 ])
 
@@ -1238,36 +2105,156 @@ def assign_series_ids(
 
                     f"{TARGET_LEAGUE}_"
                     f"{date_text}_"
-                    f"{team_names[0]}_vs_"
-                    f"{team_names[1]}_"
+                    f"{teams[0]}_vs_"
+                    f"{teams[1]}_"
                     f"S{series_number}"
                 )
 
 
-            series_ids[index] = (
+            series_ids[
+                index
+            ] = (
                 current_series_id
             )
+
 
             previous_game_number = (
                 game_number
             )
+
 
             previous_date = (
                 current_date
             )
 
 
-    games["series_id"] = (
-        games.index.map(
-            series_ids
-        )
-    )
+    games[
+        "series_id"
+    ] = series_ids
+
 
     return games
 
 
 # ============================================================
-# Fearless 정보
+# 11. 시리즈 스코어
+# ============================================================
+
+def add_series_context(
+    games
+):
+
+    games = games.copy()
+
+
+    games[
+        "blue_series_wins_before"
+    ] = 0
+
+
+    games[
+        "red_series_wins_before"
+    ] = 0
+
+
+    games[
+        "series_games_before"
+    ] = 0
+
+
+    for _, group in (
+        games.groupby(
+            "series_id"
+        )
+    ):
+
+        group = group.sort_values(
+            [
+                "game_number",
+                "date"
+            ]
+        )
+
+
+        team_wins = {}
+
+        games_played = 0
+
+
+        for index, row in (
+            group.iterrows()
+        ):
+
+            blue_team = (
+                row[
+                    "blue_team"
+                ]
+            )
+
+
+            red_team = (
+                row[
+                    "red_team"
+                ]
+            )
+
+
+            team_wins.setdefault(
+                blue_team,
+                0
+            )
+
+
+            team_wins.setdefault(
+                red_team,
+                0
+            )
+
+
+            games.at[
+                index,
+                "blue_series_wins_before"
+            ] = team_wins[
+                blue_team
+            ]
+
+
+            games.at[
+                index,
+                "red_series_wins_before"
+            ] = team_wins[
+                red_team
+            ]
+
+
+            games.at[
+                index,
+                "series_games_before"
+            ] = games_played
+
+
+            winner = (
+                row[
+                    "winner_team"
+                ]
+            )
+
+
+            team_wins[
+                winner
+            ] += 1
+
+
+            games_played += 1
+
+
+    return games
+
+
+# ============================================================
+# 12. Fearless
+#
+# 이전 Game에서 PICK된 챔피언만 사용 불가로 누적
 # ============================================================
 
 def add_fearless_info(
@@ -1276,28 +2263,40 @@ def add_fearless_info(
 
     games = games.copy()
 
+
     games[
         "fearless_unavailable_before_game"
     ] = None
 
+
     games[
         "fearless_unavailable_count"
     ] = 0
+
 
     games[
         "fearless_repeat_detected"
     ] = False
 
 
-    for series_id, group in (
+    games[
+        "fearless_repeated_champions"
+    ] = "[]"
+
+
+    for _, group in (
         games.groupby(
             "series_id"
         )
     ):
 
         group = group.sort_values(
-            "game_number"
+            [
+                "game_number",
+                "date"
+            ]
         )
+
 
         previously_picked = []
 
@@ -1321,7 +2320,9 @@ def add_fearless_info(
                 index,
                 "fearless_unavailable_before_game"
             ] = json.dumps(
+
                 unavailable,
+
                 ensure_ascii=False
             )
 
@@ -1329,20 +2330,29 @@ def add_fearless_info(
             games.at[
                 index,
                 "fearless_unavailable_count"
-            ] = len(unavailable)
+            ] = len(
+                unavailable
+            )
 
 
             current_picks = []
 
-            for i in range(1, 6):
+
+            for i in range(
+                1,
+                6
+            ):
 
                 current_picks.append(
+
                     game[
                         f"blue_pick{i}"
                     ]
                 )
 
+
                 current_picks.append(
+
                     game[
                         f"red_pick{i}"
                     ]
@@ -1361,6 +2371,17 @@ def add_fearless_info(
             ]
 
 
+            games.at[
+                index,
+                "fearless_repeated_champions"
+            ] = json.dumps(
+
+                repeats,
+
+                ensure_ascii=False
+            )
+
+
             if (
                 USE_FEARLESS
                 and repeats
@@ -1372,27 +2393,31 @@ def add_fearless_info(
                 ] = True
 
 
-            for champion in (
-                current_picks
-            ):
+            if USE_FEARLESS:
 
-                if (
-                    champion
-                    not in previously_picked
+                for champion in (
+                    current_picks
                 ):
 
-                    previously_picked.append(
+                    if (
                         champion
-                    )
+                        not in previously_picked
+                    ):
+
+                        previously_picked.append(
+                            champion
+                        )
 
 
     return games
 
 
 # ============================================================
-# 경기 시작 전 팀 승률 계산
+# 13. 경기 시작 전 팀 승률
 #
-# 현재 경기 결과는 포함하지 않는다.
+# 현재 경기 결과는 모든 Feature를 만든 후 반영
+#
+# → 데이터 누수 방지
 # ============================================================
 
 def add_team_history(
@@ -1400,17 +2425,26 @@ def add_team_history(
 ):
 
     games = games.sort_values(
+
         [
             "date",
             "series_id",
             "game_number"
         ]
-    ).reset_index(drop=True)
+
+    ).reset_index(
+        drop=True
+    )
 
 
     overall = {}
+
+    recent_results = {}
+
     side_stats = {}
+
     patch_stats = {}
+
     h2h_stats = {}
 
 
@@ -1423,9 +2457,13 @@ def add_team_history(
             f"{prefix}_team_id"
         ]
 
+
         if team_id:
 
-            return str(team_id)
+            return str(
+                team_id
+            )
+
 
         return str(
             row[
@@ -1443,12 +2481,18 @@ def add_team_history(
             "blue"
         )
 
+
         red = team_key(
             game,
             "red"
         )
 
-        patch = game["patch"]
+
+        patch = (
+            game[
+                "patch"
+            ]
+        )
 
 
         overall.setdefault(
@@ -1456,9 +2500,22 @@ def add_team_history(
             [0, 0]
         )
 
+
         overall.setdefault(
             red,
             [0, 0]
+        )
+
+
+        recent_results.setdefault(
+            blue,
+            []
+        )
+
+
+        recent_results.setdefault(
+            red,
+            []
         )
 
 
@@ -1466,6 +2523,7 @@ def add_team_history(
             (blue, "BLUE"),
             [0, 0]
         )
+
 
         side_stats.setdefault(
             (red, "RED"),
@@ -1477,6 +2535,7 @@ def add_team_history(
             (blue, patch),
             [0, 0]
         )
+
 
         patch_stats.setdefault(
             (red, patch),
@@ -1491,42 +2550,87 @@ def add_team_history(
             ])
         )
 
+
         h2h_stats.setdefault(
             pair,
             {}
         )
 
-        h2h_stats[pair].setdefault(
+
+        h2h_stats[
+            pair
+        ].setdefault(
             blue,
             [0, 0]
         )
 
-        h2h_stats[pair].setdefault(
+
+        h2h_stats[
+            pair
+        ].setdefault(
             red,
             [0, 0]
         )
 
 
-        # ----------------------------------------------------
-        # BLUE 과거 승률
-        # ----------------------------------------------------
+        # ====================================================
+        # BLUE 이전 기록
+        # ====================================================
 
         games.at[
             index,
             "blue_games_before"
-        ] = overall[blue][0]
+        ] = overall[
+            blue
+        ][0]
+
 
         games.at[
             index,
             "blue_wins_before"
-        ] = overall[blue][1]
+        ] = overall[
+            blue
+        ][1]
+
 
         games.at[
             index,
             "blue_win_rate_before"
-        ] = win_rate(
-            overall[blue][1],
-            overall[blue][0]
+        ] = safe_win_rate(
+
+            overall[
+                blue
+            ][1],
+
+            overall[
+                blue
+            ][0]
+        )
+
+
+        games.at[
+            index,
+            "blue_last5_win_rate_before"
+        ] = recent_win_rate(
+
+            recent_results[
+                blue
+            ],
+
+            5
+        )
+
+
+        games.at[
+            index,
+            "blue_last10_win_rate_before"
+        ] = recent_win_rate(
+
+            recent_results[
+                blue
+            ],
+
+            10
         )
 
 
@@ -1537,10 +2641,12 @@ def add_team_history(
             (blue, "BLUE")
         ][0]
 
+
         games.at[
             index,
             "blue_side_win_rate_before"
-        ] = win_rate(
+        ] = safe_win_rate(
+
             side_stats[
                 (blue, "BLUE")
             ][1],
@@ -1558,10 +2664,12 @@ def add_team_history(
             (blue, patch)
         ][0]
 
+
         games.at[
             index,
             "blue_patch_win_rate_before"
-        ] = win_rate(
+        ] = safe_win_rate(
+
             patch_stats[
                 (blue, patch)
             ][1],
@@ -1572,26 +2680,64 @@ def add_team_history(
         )
 
 
-        # ----------------------------------------------------
-        # RED 과거 승률
-        # ----------------------------------------------------
+        # ====================================================
+        # RED 이전 기록
+        # ====================================================
 
         games.at[
             index,
             "red_games_before"
-        ] = overall[red][0]
+        ] = overall[
+            red
+        ][0]
+
 
         games.at[
             index,
             "red_wins_before"
-        ] = overall[red][1]
+        ] = overall[
+            red
+        ][1]
+
 
         games.at[
             index,
             "red_win_rate_before"
-        ] = win_rate(
-            overall[red][1],
-            overall[red][0]
+        ] = safe_win_rate(
+
+            overall[
+                red
+            ][1],
+
+            overall[
+                red
+            ][0]
+        )
+
+
+        games.at[
+            index,
+            "red_last5_win_rate_before"
+        ] = recent_win_rate(
+
+            recent_results[
+                red
+            ],
+
+            5
+        )
+
+
+        games.at[
+            index,
+            "red_last10_win_rate_before"
+        ] = recent_win_rate(
+
+            recent_results[
+                red
+            ],
+
+            10
         )
 
 
@@ -1602,10 +2748,12 @@ def add_team_history(
             (red, "RED")
         ][0]
 
+
         games.at[
             index,
             "red_side_win_rate_before"
-        ] = win_rate(
+        ] = safe_win_rate(
+
             side_stats[
                 (red, "RED")
             ][1],
@@ -1623,10 +2771,12 @@ def add_team_history(
             (red, patch)
         ][0]
 
+
         games.at[
             index,
             "red_patch_win_rate_before"
-        ] = win_rate(
+        ] = safe_win_rate(
+
             patch_stats[
                 (red, patch)
             ][1],
@@ -1637,16 +2787,21 @@ def add_team_history(
         )
 
 
-        # ----------------------------------------------------
-        # 상대전적
-        # ----------------------------------------------------
+        # ====================================================
+        # H2H
+        # ====================================================
 
         blue_h2h = (
-            h2h_stats[pair][blue]
+            h2h_stats[
+                pair
+            ][blue]
         )
 
+
         red_h2h = (
-            h2h_stats[pair][red]
+            h2h_stats[
+                pair
+            ][red]
         )
 
 
@@ -1655,10 +2810,12 @@ def add_team_history(
             "blue_h2h_games_before"
         ] = blue_h2h[0]
 
+
         games.at[
             index,
             "blue_h2h_win_rate_before"
-        ] = win_rate(
+        ] = safe_win_rate(
+
             blue_h2h[1],
             blue_h2h[0]
         )
@@ -1669,40 +2826,71 @@ def add_team_history(
             "red_h2h_games_before"
         ] = red_h2h[0]
 
+
         games.at[
             index,
             "red_h2h_win_rate_before"
-        ] = win_rate(
+        ] = safe_win_rate(
+
             red_h2h[1],
             red_h2h[0]
         )
 
 
         # ====================================================
-        # 여기서 현재 경기 결과 반영
-        #
-        # 즉 위의 *_before에는 현재 결과가 절대 포함되지 않음
+        # 여기서부터 현재 경기 결과 반영
         # ====================================================
 
-        blue_win = (
-            game["blue_result"]
+        blue_win = int(
+
+            game[
+                "blue_result"
+            ]
+
             == 1
         )
 
-        red_win = (
-            game["red_result"]
+
+        red_win = int(
+
+            game[
+                "red_result"
+            ]
+
             == 1
         )
 
 
-        overall[blue][0] += 1
-        overall[red][0] += 1
+        overall[
+            blue
+        ][0] += 1
 
-        overall[blue][1] += int(
+
+        overall[
+            blue
+        ][1] += blue_win
+
+
+        overall[
+            red
+        ][0] += 1
+
+
+        overall[
+            red
+        ][1] += red_win
+
+
+        recent_results[
+            blue
+        ].append(
             blue_win
         )
 
-        overall[red][1] += int(
+
+        recent_results[
+            red
+        ].append(
             red_win
         )
 
@@ -1711,27 +2899,31 @@ def add_team_history(
             (blue, "BLUE")
         ][0] += 1
 
-        side_stats[
-            (red, "RED")
-        ][0] += 1
-
 
         side_stats[
             (blue, "BLUE")
-        ][1] += int(
-            blue_win
-        )
+        ][1] += blue_win
+
 
         side_stats[
             (red, "RED")
-        ][1] += int(
-            red_win
-        )
+        ][0] += 1
+
+
+        side_stats[
+            (red, "RED")
+        ][1] += red_win
 
 
         patch_stats[
             (blue, patch)
         ][0] += 1
+
+
+        patch_stats[
+            (blue, patch)
+        ][1] += blue_win
+
 
         patch_stats[
             (red, patch)
@@ -1739,21 +2931,19 @@ def add_team_history(
 
 
         patch_stats[
-            (blue, patch)
-        ][1] += int(
-            blue_win
-        )
-
-        patch_stats[
             (red, patch)
-        ][1] += int(
-            red_win
-        )
+        ][1] += red_win
 
 
         h2h_stats[
             pair
         ][blue][0] += 1
+
+
+        h2h_stats[
+            pair
+        ][blue][1] += blue_win
+
 
         h2h_stats[
             pair
@@ -1762,73 +2952,369 @@ def add_team_history(
 
         h2h_stats[
             pair
-        ][blue][1] += int(
-            blue_win
-        )
-
-        h2h_stats[
-            pair
-        ][red][1] += int(
-            red_win
-        )
+        ][red][1] += red_win
 
 
     return games
 
 
 # ============================================================
-# 챔피언의 경기 전 승률 데이터
+# 14. 챔피언 메타 History
 # ============================================================
 
-def build_champion_history(
+def build_champion_meta_history(
     games
 ):
 
-    stats = {}
-    patch_stats = {}
-    team_champion_stats = {}
-
-    records = []
-
-
     games = games.sort_values(
+
         [
             "date",
             "series_id",
             "game_number"
         ]
+
     )
 
 
-    for _, game in games.iterrows():
+    stats = {}
 
-        current = []
+    patch_stats = {}
+
+    team_champion_stats = {}
+
+    total_games = 0
+
+    patch_games = {}
+
+    records = []
 
 
-        for side in [
+    for _, game in (
+        games.iterrows()
+    ):
+
+        patch = (
+            game[
+                "patch"
+            ]
+        )
+
+
+        patch_games.setdefault(
+            patch,
+            0
+        )
+
+
+        current_updates = []
+
+
+        # ====================================================
+        # BANS
+        # ====================================================
+
+        for side in (
             "BLUE",
             "RED"
-        ]:
+        ):
 
-            prefix = side.lower()
+            prefix = (
+                side.lower()
+            )
 
-            team = game[
-                f"{prefix}_team"
-            ]
 
-            team_id = game[
-                f"{prefix}_team_id"
-            ]
+            for ban_index in range(
+                1,
+                6
+            ):
+
+                champion = (
+
+                    game[
+                        f"{prefix}_ban"
+                        f"{ban_index}"
+                    ]
+                )
+
+
+                stats.setdefault(
+
+                    champion,
+
+                    {
+                        "picks": 0,
+                        "bans": 0,
+                        "pick_wins": 0
+                    }
+                )
+
+
+                patch_key = (
+                    champion,
+                    patch
+                )
+
+
+                patch_stats.setdefault(
+
+                    patch_key,
+
+                    {
+                        "picks": 0,
+                        "bans": 0,
+                        "pick_wins": 0
+                    }
+                )
+
+
+                overall = (
+                    stats[
+                        champion
+                    ]
+                )
+
+
+                patch_data = (
+                    patch_stats[
+                        patch_key
+                    ]
+                )
+
+
+                records.append({
+
+                    "game_id":
+                        game[
+                            "game_id"
+                        ],
+
+                    "series_id":
+                        game[
+                            "series_id"
+                        ],
+
+                    "game_number":
+                        game[
+                            "game_number"
+                        ],
+
+                    "date":
+                        game[
+                            "date"
+                        ],
+
+                    "patch":
+                        patch,
+
+                    "champion":
+                        champion,
+
+                    "current_action":
+                        "BAN",
+
+                    "current_side":
+                        side,
+
+                    "team":
+                        None,
+
+                    "picks_before":
+                        overall[
+                            "picks"
+                        ],
+
+                    "bans_before":
+                        overall[
+                            "bans"
+                        ],
+
+                    "presence_before":
+
+                        (
+                            overall[
+                                "picks"
+                            ]
+
+                            + overall[
+                                "bans"
+                            ]
+                        ),
+
+                    "pick_rate_before":
+
+                        (
+                            overall[
+                                "picks"
+                            ]
+                            / total_games
+
+                            if total_games > 0
+
+                            else None
+                        ),
+
+                    "ban_rate_before":
+
+                        (
+                            overall[
+                                "bans"
+                            ]
+                            / total_games
+
+                            if total_games > 0
+
+                            else None
+                        ),
+
+                    "presence_rate_before":
+
+                        (
+                            (
+                                overall[
+                                    "picks"
+                                ]
+
+                                + overall[
+                                    "bans"
+                                ]
+                            )
+                            / total_games
+
+                            if total_games > 0
+
+                            else None
+                        ),
+
+                    "pick_win_rate_before":
+
+                        safe_win_rate(
+
+                            overall[
+                                "pick_wins"
+                            ],
+
+                            overall[
+                                "picks"
+                            ]
+                        ),
+
+                    "patch_picks_before":
+                        patch_data[
+                            "picks"
+                        ],
+
+                    "patch_bans_before":
+                        patch_data[
+                            "bans"
+                        ],
+
+                    "patch_pick_win_rate_before":
+
+                        safe_win_rate(
+
+                            patch_data[
+                                "pick_wins"
+                            ],
+
+                            patch_data[
+                                "picks"
+                            ]
+                        ),
+
+                    "patch_presence_rate_before":
+
+                        (
+                            (
+                                patch_data[
+                                    "picks"
+                                ]
+
+                                + patch_data[
+                                    "bans"
+                                ]
+                            )
+                            / patch_games[
+                                patch
+                            ]
+
+                            if patch_games[
+                                patch
+                            ] > 0
+
+                            else None
+                        ),
+
+                    "team_champion_games_before":
+                        None,
+
+                    "team_champion_win_rate_before":
+                        None,
+
+                    "picked_side_won":
+                        None
+                })
+
+
+                current_updates.append({
+
+                    "type":
+                        "BAN",
+
+                    "champion":
+                        champion,
+
+                    "patch_key":
+                        patch_key
+                })
+
+
+        # ====================================================
+        # PICKS
+        # ====================================================
+
+        for side in (
+            "BLUE",
+            "RED"
+        ):
+
+            prefix = (
+                side.lower()
+            )
+
+
+            team_id = (
+
+                game[
+                    f"{prefix}_team_id"
+                ]
+            )
+
+
+            team = (
+
+                game[
+                    f"{prefix}_team"
+                ]
+            )
+
 
             team_key = (
+
                 str(team_id)
+
                 if team_id
+
                 else str(team)
             )
 
 
             won = int(
-                game["winner_side"]
+
+                game[
+                    "winner_side"
+                ]
+
                 == side
             )
 
@@ -1838,179 +3324,385 @@ def build_champion_history(
                 6
             ):
 
-                champion = game[
-                    f"{prefix}_pick"
-                    f"{pick_index}"
-                ]
+                champion = (
+
+                    game[
+                        f"{prefix}_pick"
+                        f"{pick_index}"
+                    ]
+                )
 
 
                 stats.setdefault(
+
                     champion,
-                    [0, 0]
+
+                    {
+                        "picks": 0,
+                        "bans": 0,
+                        "pick_wins": 0
+                    }
                 )
 
 
                 patch_key = (
                     champion,
-                    game["patch"]
+                    patch
                 )
+
 
                 patch_stats.setdefault(
+
                     patch_key,
-                    [0, 0]
+
+                    {
+                        "picks": 0,
+                        "bans": 0,
+                        "pick_wins": 0
+                    }
                 )
 
 
-                tc_key = (
+                team_champion_key = (
+
                     team_key,
                     champion
                 )
 
+
                 team_champion_stats.setdefault(
-                    tc_key,
+
+                    team_champion_key,
+
                     [0, 0]
                 )
 
 
-                # --------------------------------------------
-                # 현재 경기 전 통계
-                # --------------------------------------------
+                overall = (
+                    stats[
+                        champion
+                    ]
+                )
+
+
+                patch_data = (
+                    patch_stats[
+                        patch_key
+                    ]
+                )
+
+
+                team_champion = (
+                    team_champion_stats[
+                        team_champion_key
+                    ]
+                )
+
 
                 records.append({
 
                     "game_id":
-                        game["game_id"],
+                        game[
+                            "game_id"
+                        ],
 
                     "series_id":
-                        game["series_id"],
+                        game[
+                            "series_id"
+                        ],
 
                     "game_number":
-                        game["game_number"],
+                        game[
+                            "game_number"
+                        ],
 
                     "date":
-                        game["date"],
+                        game[
+                            "date"
+                        ],
 
                     "patch":
-                        game["patch"],
+                        patch,
 
-                    "side":
+                    "champion":
+                        champion,
+
+                    "current_action":
+                        "PICK",
+
+                    "current_side":
                         side,
 
                     "team":
                         team,
 
-                    "champion":
-                        champion,
+                    "picks_before":
+                        overall[
+                            "picks"
+                        ],
 
-                    "pick_index":
-                        pick_index,
+                    "bans_before":
+                        overall[
+                            "bans"
+                        ],
 
-                    "champion_games_before":
-                        stats[
-                            champion
-                        ][0],
+                    "presence_before":
 
-                    "champion_wins_before":
-                        stats[
-                            champion
-                        ][1],
+                        (
+                            overall[
+                                "picks"
+                            ]
 
-                    "champion_win_rate_before":
-                        win_rate(
-                            stats[
-                                champion
-                            ][1],
-
-                            stats[
-                                champion
-                            ][0]
+                            + overall[
+                                "bans"
+                            ]
                         ),
 
-                    "champion_patch_games_before":
-                        patch_stats[
-                            patch_key
-                        ][0],
+                    "pick_rate_before":
 
-                    "champion_patch_win_rate_before":
-                        win_rate(
-                            patch_stats[
-                                patch_key
-                            ][1],
+                        (
+                            overall[
+                                "picks"
+                            ]
+                            / total_games
 
-                            patch_stats[
-                                patch_key
-                            ][0]
+                            if total_games > 0
+
+                            else None
+                        ),
+
+                    "ban_rate_before":
+
+                        (
+                            overall[
+                                "bans"
+                            ]
+                            / total_games
+
+                            if total_games > 0
+
+                            else None
+                        ),
+
+                    "presence_rate_before":
+
+                        (
+                            (
+                                overall[
+                                    "picks"
+                                ]
+
+                                + overall[
+                                    "bans"
+                                ]
+                            )
+
+                            / total_games
+
+                            if total_games > 0
+
+                            else None
+                        ),
+
+                    "pick_win_rate_before":
+
+                        safe_win_rate(
+
+                            overall[
+                                "pick_wins"
+                            ],
+
+                            overall[
+                                "picks"
+                            ]
+                        ),
+
+                    "patch_picks_before":
+                        patch_data[
+                            "picks"
+                        ],
+
+                    "patch_bans_before":
+                        patch_data[
+                            "bans"
+                        ],
+
+                    "patch_pick_win_rate_before":
+
+                        safe_win_rate(
+
+                            patch_data[
+                                "pick_wins"
+                            ],
+
+                            patch_data[
+                                "picks"
+                            ]
+                        ),
+
+                    "patch_presence_rate_before":
+
+                        (
+                            (
+                                patch_data[
+                                    "picks"
+                                ]
+
+                                + patch_data[
+                                    "bans"
+                                ]
+                            )
+
+                            / patch_games[
+                                patch
+                            ]
+
+                            if patch_games[
+                                patch
+                            ] > 0
+
+                            else None
                         ),
 
                     "team_champion_games_before":
-                        team_champion_stats[
-                            tc_key
-                        ][0],
+                        team_champion[0],
 
                     "team_champion_win_rate_before":
-                        win_rate(
-                            team_champion_stats[
-                                tc_key
-                            ][1],
 
-                            team_champion_stats[
-                                tc_key
-                            ][0]
+                        safe_win_rate(
+
+                            team_champion[1],
+                            team_champion[0]
                         ),
 
-                    # 결과 라벨
-                    # 모델 입력으로 직접 사용하면 안 됨
                     "picked_side_won":
                         won
                 })
 
 
-                current.append(
-                    (
+                current_updates.append({
+
+                    "type":
+                        "PICK",
+
+                    "champion":
                         champion,
+
+                    "patch_key":
                         patch_key,
-                        tc_key,
+
+                    "team_champion_key":
+                        team_champion_key,
+
+                    "won":
                         won
-                    )
+                })
+
+
+        # ====================================================
+        # 현재 경기 결과 반영
+        # ====================================================
+
+        for update in (
+            current_updates
+        ):
+
+            champion = (
+                update[
+                    "champion"
+                ]
+            )
+
+
+            patch_key = (
+                update[
+                    "patch_key"
+                ]
+            )
+
+
+            if (
+                update[
+                    "type"
+                ]
+                == "BAN"
+            ):
+
+                stats[
+                    champion
+                ][
+                    "bans"
+                ] += 1
+
+
+                patch_stats[
+                    patch_key
+                ][
+                    "bans"
+                ] += 1
+
+
+            else:
+
+                won = (
+                    update[
+                        "won"
+                    ]
                 )
 
 
-        # ====================================================
-        # 경기 전 통계 기록이 끝난 뒤 현재 경기 반영
-        # ====================================================
+                team_champion_key = (
 
-        for (
-            champion,
-            patch_key,
-            tc_key,
-            won
-        ) in current:
-
-            stats[
-                champion
-            ][0] += 1
-
-            stats[
-                champion
-            ][1] += won
+                    update[
+                        "team_champion_key"
+                    ]
+                )
 
 
-            patch_stats[
-                patch_key
-            ][0] += 1
-
-            patch_stats[
-                patch_key
-            ][1] += won
+                stats[
+                    champion
+                ][
+                    "picks"
+                ] += 1
 
 
-            team_champion_stats[
-                tc_key
-            ][0] += 1
+                stats[
+                    champion
+                ][
+                    "pick_wins"
+                ] += won
 
-            team_champion_stats[
-                tc_key
-            ][1] += won
+
+                patch_stats[
+                    patch_key
+                ][
+                    "picks"
+                ] += 1
+
+
+                patch_stats[
+                    patch_key
+                ][
+                    "pick_wins"
+                ] += won
+
+
+                team_champion_stats[
+                    team_champion_key
+                ][0] += 1
+
+
+                team_champion_stats[
+                    team_champion_key
+                ][1] += won
+
+
+        total_games += 1
+
+
+        patch_games[
+            patch
+        ] += 1
 
 
     return pd.DataFrame(
@@ -2019,14 +3711,14 @@ def build_champion_history(
 
 
 # ============================================================
-# 실제 밴픽 Action 데이터
+# 15. 실제 Draft Actions Dataset
 # ============================================================
 
 def build_actions(
     games
 ):
 
-    actions_all = []
+    output = []
 
 
     for _, game in (
@@ -2087,10 +3779,13 @@ def build_actions(
 
         actions = (
             reconstruct_draft_actions(
+
                 blue_bans,
                 red_bans,
+
                 blue_picks,
                 red_picks,
+
                 game[
                     "first_pick_side"
                 ]
@@ -2098,112 +3793,213 @@ def build_actions(
         )
 
 
+        if len(actions) != 20:
+
+            print(
+
+                f"[경고] game_id="
+                f"{game['game_id']} "
+
+                f"Draft Action이 "
+                f"{len(actions)}개입니다."
+            )
+
+
         for action in actions:
 
             acting_side = (
-                action["side"]
-            )
-
-            acting_prefix = (
-                acting_side.lower()
+                action[
+                    "side"
+                ]
             )
 
 
             action.update({
 
+                # --------------------------------------------
+                # 경기 정보
+                # --------------------------------------------
+
                 "game_id":
-                    game["game_id"],
+                    game[
+                        "game_id"
+                    ],
 
                 "series_id":
-                    game["series_id"],
+                    game[
+                        "series_id"
+                    ],
 
                 "game_number":
-                    game["game_number"],
+                    game[
+                        "game_number"
+                    ],
 
                 "date":
-                    game["date"],
+                    game[
+                        "date"
+                    ],
 
                 "patch":
-                    game["patch"],
+                    game[
+                        "patch"
+                    ],
 
                 "blue_team":
-                    game["blue_team"],
+                    game[
+                        "blue_team"
+                    ],
 
                 "red_team":
-                    game["red_team"],
+                    game[
+                        "red_team"
+                    ],
 
                 "first_pick_side":
                     game[
                         "first_pick_side"
                     ],
 
+
+                # --------------------------------------------
+                # 시리즈 상태
+                # --------------------------------------------
+
+                "blue_series_wins_before":
+
+                    game[
+                        "blue_series_wins_before"
+                    ],
+
+                "red_series_wins_before":
+
+                    game[
+                        "red_series_wins_before"
+                    ],
+
+                "series_games_before":
+
+                    game[
+                        "series_games_before"
+                    ],
+
+
+                # --------------------------------------------
+                # Fearless
+                # --------------------------------------------
+
                 "fearless_unavailable":
+
                     game[
                         "fearless_unavailable_before_game"
                     ],
 
+                "fearless_unavailable_count":
+
+                    game[
+                        "fearless_unavailable_count"
+                    ],
+
+
                 # --------------------------------------------
-                # 예측 당시 사용 가능한 과거 승률
+                # 과거 승률
                 # --------------------------------------------
 
                 "blue_win_rate_before":
+
                     game[
                         "blue_win_rate_before"
                     ],
 
                 "red_win_rate_before":
+
                     game[
                         "red_win_rate_before"
                     ],
 
+                "blue_last5_win_rate_before":
+
+                    game[
+                        "blue_last5_win_rate_before"
+                    ],
+
+                "red_last5_win_rate_before":
+
+                    game[
+                        "red_last5_win_rate_before"
+                    ],
+
+                "blue_last10_win_rate_before":
+
+                    game[
+                        "blue_last10_win_rate_before"
+                    ],
+
+                "red_last10_win_rate_before":
+
+                    game[
+                        "red_last10_win_rate_before"
+                    ],
+
                 "blue_side_win_rate_before":
+
                     game[
                         "blue_side_win_rate_before"
                     ],
 
                 "red_side_win_rate_before":
+
                     game[
                         "red_side_win_rate_before"
                     ],
 
                 "blue_patch_win_rate_before":
+
                     game[
                         "blue_patch_win_rate_before"
                     ],
 
                 "red_patch_win_rate_before":
+
                     game[
                         "red_patch_win_rate_before"
                     ],
 
                 "blue_h2h_win_rate_before":
+
                     game[
                         "blue_h2h_win_rate_before"
                     ],
 
                 "red_h2h_win_rate_before":
+
                     game[
                         "red_h2h_win_rate_before"
                     ],
 
+
                 # --------------------------------------------
-                # 경기 결과
-                # 이것들은 LABEL
+                # 결과 Label
                 # --------------------------------------------
 
                 "winner_side":
+
                     game[
                         "winner_side"
                     ],
 
                 "winner_team":
+
                     game[
                         "winner_team"
                     ],
 
                 "acting_side_won":
+
                     int(
+
                         acting_side
+
                         == game[
                             "winner_side"
                         ]
@@ -2211,19 +4007,24 @@ def build_actions(
             })
 
 
-            actions_all.append(
+            output.append(
                 action
             )
 
 
     return pd.DataFrame(
-        actions_all
+        output
     )
 
 
 # ============================================================
-# ML용
-# 현재 Draft → 다음 Pick/Ban
+# 16. 모델 학습용 Sample
+#
+# 현재 draft_state
+#       ↓
+# 다음 BAN/PICK 예측
+#
+# 한 경기당 20개 Sample
 # ============================================================
 
 def build_training_samples(
@@ -2234,17 +4035,20 @@ def build_training_samples(
 
 
     for game_id, group in (
+
         actions.groupby(
             "game_id",
             sort=False
         )
+
     ):
 
         group = group.sort_values(
             "order"
         )
 
-        state = []
+
+        current_state = []
 
 
         for _, action in (
@@ -2291,8 +4095,32 @@ def build_training_samples(
                         "first_pick_side"
                     ],
 
+
                 # --------------------------------------------
-                # 현재 Draft 진행 상황
+                # 시리즈
+                # --------------------------------------------
+
+                "blue_series_wins_before":
+
+                    action[
+                        "blue_series_wins_before"
+                    ],
+
+                "red_series_wins_before":
+
+                    action[
+                        "red_series_wins_before"
+                    ],
+
+                "series_games_before":
+
+                    action[
+                        "series_games_before"
+                    ],
+
+
+                # --------------------------------------------
+                # 현재 Draft
                 # --------------------------------------------
 
                 "step":
@@ -2300,105 +4128,169 @@ def build_training_samples(
                         "order"
                     ],
 
+                "current_phase":
+                    action[
+                        "phase"
+                    ],
+
                 "draft_state":
+
                     json.dumps(
-                        state,
+
+                        current_state,
+
                         ensure_ascii=False
                     ),
 
+
+                # --------------------------------------------
+                # Fearless
+                # --------------------------------------------
+
                 "fearless_unavailable":
+
                     action[
                         "fearless_unavailable"
                     ],
 
+                "fearless_unavailable_count":
+
+                    action[
+                        "fearless_unavailable_count"
+                    ],
+
+
                 # --------------------------------------------
-                # 과거 승률 Feature
+                # 경기 전 승률 Feature
                 # --------------------------------------------
 
                 "blue_win_rate_before":
+
                     action[
                         "blue_win_rate_before"
                     ],
 
                 "red_win_rate_before":
+
                     action[
                         "red_win_rate_before"
                     ],
 
+                "blue_last5_win_rate_before":
+
+                    action[
+                        "blue_last5_win_rate_before"
+                    ],
+
+                "red_last5_win_rate_before":
+
+                    action[
+                        "red_last5_win_rate_before"
+                    ],
+
+                "blue_last10_win_rate_before":
+
+                    action[
+                        "blue_last10_win_rate_before"
+                    ],
+
+                "red_last10_win_rate_before":
+
+                    action[
+                        "red_last10_win_rate_before"
+                    ],
+
                 "blue_side_win_rate_before":
+
                     action[
                         "blue_side_win_rate_before"
                     ],
 
                 "red_side_win_rate_before":
+
                     action[
                         "red_side_win_rate_before"
                     ],
 
                 "blue_patch_win_rate_before":
+
                     action[
                         "blue_patch_win_rate_before"
                     ],
 
                 "red_patch_win_rate_before":
+
                     action[
                         "red_patch_win_rate_before"
                     ],
 
                 "blue_h2h_win_rate_before":
+
                     action[
                         "blue_h2h_win_rate_before"
                     ],
 
                 "red_h2h_win_rate_before":
+
                     action[
                         "red_h2h_win_rate_before"
                     ],
 
+
                 # --------------------------------------------
-                # 다음 행동 예측 정답
+                # 다음 행동 예측 Label
                 # --------------------------------------------
 
                 "next_side":
+
                     action[
                         "side"
                     ],
 
                 "next_action":
+
                     action[
                         "action"
                     ],
 
                 "target_champion":
+
                     action[
                         "champion"
                     ],
 
+
                 # --------------------------------------------
-                # 추천/승률 모델 평가용 Label
+                # 승률 모델 Label
                 #
-                # Feature로 바로 넣으면 안 됨
+                # Feature로 사용하면 안 됨
                 # --------------------------------------------
 
                 "winner_side":
+
                     action[
                         "winner_side"
                     ],
 
                 "winner_team":
+
                     action[
                         "winner_team"
                     ],
 
                 "next_side_eventually_won":
+
                     action[
                         "acting_side_won"
                     ]
             })
 
 
-            # 현재 action을 상태에 추가
-            state.append({
+            # =================================================
+            # 현재 행동을 다음 상태에 추가
+            # =================================================
+
+            current_state.append({
 
                 "order":
                     int(
@@ -2435,92 +4327,242 @@ def build_training_samples(
 
 
 # ============================================================
-# MAIN
+# 17. 데이터 검증
+# ============================================================
+
+def validate_outputs(
+    games,
+    actions
+):
+
+    print()
+    print(
+        "========================================"
+    )
+
+    print(
+        "데이터 검증"
+    )
+
+    print(
+        "========================================"
+    )
+
+
+    print(
+        "경기 수:",
+        len(
+            games
+        )
+    )
+
+
+    print(
+        "Draft Action 수:",
+        len(
+            actions
+        )
+    )
+
+
+    expected_actions = (
+
+        len(
+            games
+        )
+
+        * 20
+    )
+
+
+    print(
+        "예상 Draft Action 수:",
+        expected_actions
+    )
+
+
+    if (
+        len(actions)
+        != expected_actions
+    ):
+
+        print(
+            "[경고] 일부 경기의 "
+            "20단계 밴픽 복원에 "
+            "문제가 있을 수 있습니다."
+        )
+
+
+    if not actions.empty:
+
+        action_counts = (
+
+            actions.groupby(
+                "game_id"
+            )
+            .size()
+        )
+
+
+        bad_games = action_counts[
+            action_counts
+            != 20
+        ]
+
+
+        print(
+            "20 Actions가 아닌 경기 수:",
+            len(
+                bad_games
+            )
+        )
+
+
+    fearless_repeats = games[
+
+        games[
+            "fearless_repeat_detected"
+        ]
+
+        == True
+
+    ]
+
+
+    print(
+        "Fearless 중복 감지 경기:",
+        len(
+            fearless_repeats
+        )
+    )
+
+
+# ============================================================
+# 18. MAIN
 # ============================================================
 
 def main():
 
     print()
     print(
-        "======================================"
+        "========================================"
     )
 
     print(
-        "Oracle's Elixir → LCK Dataset"
+        "Oracle's Elixir → LCK Dataset Builder"
     )
 
     print(
-        "======================================"
+        "========================================"
     )
 
 
-    # --------------------------------------------------------
-    # 파일 확인
-    # --------------------------------------------------------
+    source_updated = False
+
+
+    # ========================================================
+    # Oracle 최신 데이터 자동 다운로드
+    # ========================================================
+
+    if AUTO_DOWNLOAD:
+
+        try:
+
+            source_updated = (
+                download_latest_oracle_data()
+            )
+
+
+        except Exception as e:
+
+            print()
+            print(
+                "자동 다운로드 실패:"
+            )
+
+            print(
+                e
+            )
+
+
+            if RAW_FILE.exists():
+
+                print()
+                print(
+                    "기존 로컬 Oracle 파일로 "
+                    "계속 진행합니다."
+                )
+
+
+            else:
+
+                raise
+
+
+    # ========================================================
+    # Oracle Raw 존재 확인
+    # ========================================================
 
     if not RAW_FILE.exists():
 
         raise FileNotFoundError(
-
-            "\nOracle 파일이 없습니다.\n\n"
-
-            "Oracle's Elixir에서 받은 CSV를\n"
-
-            f"{RAW_FILE}\n"
-
-            "위치에 넣어주세요."
+            f"Oracle 파일 없음: "
+            f"{RAW_FILE}"
         )
 
 
-    # --------------------------------------------------------
-    # 원본 변경 여부
-    # --------------------------------------------------------
+    # ========================================================
+    # Hash
+    # ========================================================
 
-    file_hash = (
+    current_hash = (
         calculate_sha256(
             RAW_FILE
         )
     )
 
 
+    print()
     print(
-        "Source SHA256:",
-        file_hash[:16]
+        "현재 Oracle SHA256:",
+        current_hash[:16]
     )
 
 
-    if (
-        SKIP_IF_SOURCE_UNCHANGED
-        and source_is_unchanged(
-            file_hash
+    source_changed_since_last_run = (
+
+        not source_is_unchanged(
+            current_hash
         )
+    )
+
+
+    # ========================================================
+    # 완성 후 자동 운영 모드
+    # ========================================================
+
+    if (
+
+        SKIP_IF_SOURCE_UNCHANGED
+
+        and not source_changed_since_last_run
+
     ):
 
-        print()
         print(
             "Oracle 원본이 이전 실행과 동일합니다."
         )
 
         print(
-            "새 데이터가 없으므로 종료합니다."
+            "데이터셋 생성을 건너뜁니다."
         )
 
         return
 
 
-    # --------------------------------------------------------
-    # 원본 백업
-    # --------------------------------------------------------
-
-    archive_raw_file(
-        RAW_FILE,
-        file_hash
-    )
-
-
-    # --------------------------------------------------------
+    # ========================================================
     # Oracle 읽기
-    # --------------------------------------------------------
+    # ========================================================
 
     print()
     print(
@@ -2536,13 +4578,15 @@ def main():
 
     print(
         "Oracle 전체 행:",
-        len(df)
+        len(
+            df
+        )
     )
 
 
-    # --------------------------------------------------------
-    # Game Dataset
-    # --------------------------------------------------------
+    # ========================================================
+    # LCK 경기 데이터
+    # ========================================================
 
     games, failed, raw_lck = (
         build_games(
@@ -2552,14 +4596,23 @@ def main():
 
 
     print(
-        "완성 LCK 경기:",
-        len(games)
+        "LCK 완성 경기:",
+        len(
+            games
+        )
     )
 
 
-    # --------------------------------------------------------
+    if games.empty:
+
+        raise ValueError(
+            "가공 가능한 LCK 경기가 없습니다."
+        )
+
+
+    # ========================================================
     # Series
-    # --------------------------------------------------------
+    # ========================================================
 
     games = (
         assign_series_ids(
@@ -2568,9 +4621,20 @@ def main():
     )
 
 
-    # --------------------------------------------------------
+    # ========================================================
+    # 시리즈 스코어
+    # ========================================================
+
+    games = (
+        add_series_context(
+            games
+        )
+    )
+
+
+    # ========================================================
     # Fearless
-    # --------------------------------------------------------
+    # ========================================================
 
     games = (
         add_fearless_info(
@@ -2579,9 +4643,9 @@ def main():
     )
 
 
-    # --------------------------------------------------------
-    # 팀 과거 승률
-    # --------------------------------------------------------
+    # ========================================================
+    # 팀 승률
+    # ========================================================
 
     games = (
         add_team_history(
@@ -2590,20 +4654,20 @@ def main():
     )
 
 
-    # --------------------------------------------------------
-    # Champion History
-    # --------------------------------------------------------
+    # ========================================================
+    # 챔피언 메타
+    # ========================================================
 
-    champion_history = (
-        build_champion_history(
+    champion_meta = (
+        build_champion_meta_history(
             games
         )
     )
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # Draft Actions
-    # --------------------------------------------------------
+    # ========================================================
 
     actions = (
         build_actions(
@@ -2612,9 +4676,9 @@ def main():
     )
 
 
-    # --------------------------------------------------------
-    # Training Sample
-    # --------------------------------------------------------
+    # ========================================================
+    # Training Samples
+    # ========================================================
 
     training = (
         build_training_samples(
@@ -2624,101 +4688,194 @@ def main():
 
 
     # ========================================================
-    # 저장
+    # 검증
     # ========================================================
 
-    today = datetime.now().strftime(
-        "%Y%m%d"
+    validate_outputs(
+        games,
+        actions
     )
 
 
-    # 최신
-    games.to_csv(
-        PROCESSED_DIR
-        / "lck_games_latest.csv",
-        index=False,
-        encoding="utf-8-sig"
+    # ========================================================
+    # 최신 파일
+    #
+    # 코드 수정 후 실행해도 항상 다시 생성
+    # ========================================================
+
+    output_paths = []
+
+
+    output_paths.append(
+
+        safe_write_csv(
+
+            raw_lck,
+
+            PROCESSED_DIR
+            / "lck_raw_latest.csv"
+        )
     )
 
 
-    actions.to_csv(
-        PROCESSED_DIR
-        / "lck_draft_actions_latest.csv",
-        index=False,
-        encoding="utf-8-sig"
+    output_paths.append(
+
+        safe_write_csv(
+
+            games,
+
+            PROCESSED_DIR
+            / "lck_games_latest.csv"
+        )
     )
 
 
-    training.to_csv(
-        PROCESSED_DIR
-        / "lck_training_samples_latest.csv",
-        index=False,
-        encoding="utf-8-sig"
+    output_paths.append(
+
+        safe_write_csv(
+
+            actions,
+
+            PROCESSED_DIR
+            / "lck_draft_actions_latest.csv"
+        )
     )
 
 
-    champion_history.to_csv(
-        PROCESSED_DIR
-        / "lck_champion_history_latest.csv",
-        index=False,
-        encoding="utf-8-sig"
+    output_paths.append(
+
+        safe_write_csv(
+
+            training,
+
+            PROCESSED_DIR
+            / "lck_training_samples_latest.csv"
+        )
     )
 
 
-    # --------------------------------------------------------
-    # 날짜별 Snapshot
-    # --------------------------------------------------------
+    output_paths.append(
 
-    games.to_csv(
-        PROCESSED_DIR
-        / f"lck_games_{today}.csv",
-        index=False,
-        encoding="utf-8-sig"
+        safe_write_csv(
+
+            champion_meta,
+
+            PROCESSED_DIR
+            / "lck_champion_meta_history_latest.csv"
+        )
     )
 
 
-    actions.to_csv(
-        PROCESSED_DIR
-        / f"lck_draft_actions_{today}.csv",
-        index=False,
-        encoding="utf-8-sig"
-    )
-
-
-    # --------------------------------------------------------
+    # ========================================================
     # 실패 경기
-    # --------------------------------------------------------
+    # ========================================================
 
     if not failed.empty:
 
-        failed.to_csv(
-            PROCESSED_DIR
-            / "failed_games.csv",
-            index=False,
-            encoding="utf-8-sig"
+        output_paths.append(
+
+            safe_write_csv(
+
+                failed,
+
+                PROCESSED_DIR
+                / "failed_games.csv"
+            )
         )
 
 
-    # --------------------------------------------------------
+    # ========================================================
+    # Snapshot
+    #
+    # Oracle 원본 데이터가 실제로 변경됐을 때만 저장
+    #
+    # 날짜 + 시간 사용
+    #
+    # 같은 날 여러 번 데이터가 갱신되어도 충돌 X
+    # ========================================================
+
+    should_snapshot = (
+
+        source_updated
+
+        or source_changed_since_last_run
+    )
+
+
+    if should_snapshot:
+
+        timestamp = (
+
+            datetime.now()
+            .strftime(
+                "%Y%m%d_%H%M%S"
+            )
+        )
+
+
+        output_paths.append(
+
+            safe_write_csv(
+
+                games,
+
+                PROCESSED_DIR
+                / (
+                    f"lck_games_"
+                    f"{timestamp}.csv"
+                )
+            )
+        )
+
+
+        output_paths.append(
+
+            safe_write_csv(
+
+                actions,
+
+                PROCESSED_DIR
+                / (
+                    f"lck_draft_actions_"
+                    f"{timestamp}.csv"
+                )
+            )
+        )
+
+
+        print()
+        print(
+            "새 Oracle 원본 기준 "
+            "Snapshot 저장 완료"
+        )
+
+
+    # ========================================================
     # Metadata
-    # --------------------------------------------------------
+    # ========================================================
 
     metadata = {
 
         "processed_at":
-            datetime.now().isoformat(),
+            datetime.now()
+            .isoformat(),
 
         "source":
             "Oracle's Elixir",
 
-        "source_page":
-            SOURCE_PAGE,
+        "oracle_google_drive_file_id":
+            ORACLE_FILE_ID,
 
         "source_file":
-            str(RAW_FILE),
+            str(
+                RAW_FILE
+            ),
 
         "source_sha256":
-            file_hash,
+            current_hash,
+
+        "source_updated_this_run":
+            source_updated,
 
         "year":
             TARGET_YEAR,
@@ -2730,37 +4887,55 @@ def main():
             USE_FEARLESS,
 
         "raw_lck_rows":
-            len(raw_lck),
+            len(
+                raw_lck
+            ),
 
         "games":
-            len(games),
+            len(
+                games
+            ),
 
         "draft_actions":
-            len(actions),
+            len(
+                actions
+            ),
 
         "training_samples":
-            len(training),
-
-        "champion_history_rows":
             len(
-                champion_history
+                training
+            ),
+
+        "champion_meta_rows":
+            len(
+                champion_meta
             ),
 
         "failed_games":
-            len(failed)
+            len(
+                failed
+            )
     }
 
 
     with open(
+
         METADATA_FILE,
+
         "w",
+
         encoding="utf-8"
+
     ) as file:
 
         json.dump(
+
             metadata,
+
             file,
+
             ensure_ascii=False,
+
             indent=2
         )
 
@@ -2771,70 +4946,76 @@ def main():
 
     print()
     print(
-        "======================================"
+        "========================================"
     )
 
     print(
-        "완료"
+        "데이터셋 생성 완료"
     )
 
     print(
-        "======================================"
+        "========================================"
     )
+
 
     print(
         "LCK 경기:",
-        len(games)
-    )
-
-    print(
-        "Draft Actions:",
-        len(actions)
-    )
-
-    print(
-        "Training Samples:",
-        len(training)
-    )
-
-    print(
-        "Champion History:",
         len(
-            champion_history
+            games
         )
     )
 
+
+    print(
+        "Draft Action:",
+        len(
+            actions
+        )
+    )
+
+
+    print(
+        "Training Sample:",
+        len(
+            training
+        )
+    )
+
+
+    print(
+        "Champion Meta:",
+        len(
+            champion_meta
+        )
+    )
+
+
     print(
         "실패 경기:",
-        len(failed)
+        len(
+            failed
+        )
     )
+
 
     print()
-
     print(
-        "생성 파일:"
+        "저장된 파일:"
     )
 
-    print(
-        "data/processed/lck_raw_latest.csv"
-    )
 
-    print(
-        "data/processed/lck_games_latest.csv"
-    )
+    for path in (
+        output_paths
+    ):
 
-    print(
-        "data/processed/lck_draft_actions_latest.csv"
-    )
+        print(
+            path
+        )
 
-    print(
-        "data/processed/lck_training_samples_latest.csv"
-    )
 
-    print(
-        "data/processed/lck_champion_history_latest.csv"
-    )
-
+# ============================================================
+# 실행
+# ============================================================
 
 if __name__ == "__main__":
 
