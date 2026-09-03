@@ -6,53 +6,78 @@ import json
 import re
 import shutil
 
+import gdown
 import numpy as np
 import pandas as pd
 
 
 # ============================================================
-# 0. 설정
+# 0. 기본 설정
 # ============================================================
 
 TARGET_LEAGUE = "LCK"
 TARGET_YEARS = [2025, 2026]
 
-# 2025, 2026 LCK를 Fearless 대상으로 처리
+# 2025, 2026 Fearless 적용
 FEARLESS_YEARS = {2025, 2026}
 
-# 같은 두 팀 경기의 간격이 이 시간보다 길면
-# 다른 시리즈로 간주
+# 같은 두 팀의 경기가 이 시간보다 멀리 떨어져 있으면
+# 다른 시리즈로 판단
 MAX_SERIES_GAP_HOURS = 12
+
+# 밴 카드를 사용하지 않은 경우 저장할 값
+NO_BAN_TOKEN = "NO_BAN"
 
 
 # ============================================================
-# 1. 파일 경로
+# 1. 2026 Oracle 자동 다운로드 설정
+# ============================================================
+
+AUTO_DOWNLOAD_2026 = True
+
+ORACLE_2026_FILE_ID = (
+    "1hnpbrUpBMS1TZI7IovfpKeZfWJH1Aptm"
+)
+
+
+# ============================================================
+# 2. 폴더 경로
 # ============================================================
 
 RAW_DIR = Path("data/raw")
 ARCHIVE_DIR = Path("data/raw_archive")
 PROCESSED_DIR = Path("data/processed")
 
-RAW_DIR.mkdir(parents=True, exist_ok=True)
-ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
-PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+RAW_DIR.mkdir(
+    parents=True,
+    exist_ok=True
+)
+
+ARCHIVE_DIR.mkdir(
+    parents=True,
+    exist_ok=True
+)
+
+PROCESSED_DIR.mkdir(
+    parents=True,
+    exist_ok=True
+)
 
 
 RAW_FILES = {
-    2025: (
-        RAW_DIR
-        / "2025_LoL_esports_match_data_from_OraclesElixir.csv"
-    ),
 
-    2026: (
+    2025:
         RAW_DIR
-        / "2026_LoL_esports_match_data_from_OraclesElixir.csv"
-    ),
+        / "2025_LoL_esports_match_data_from_OraclesElixir.csv",
+
+    2026:
+        RAW_DIR
+        / "2026_LoL_esports_match_data_from_OraclesElixir.csv",
 }
 
 
 # ============================================================
-# 2. 기본 함수
+# 3. 기본 함수
 # ============================================================
 
 def clean_value(value):
@@ -113,14 +138,17 @@ def calculate_rate(wins, games):
 
 
 # ============================================================
-# 3. SHA256
+# 4. SHA256
 # ============================================================
 
 def calculate_sha256(path):
 
     sha = hashlib.sha256()
 
-    with open(path, "rb") as file:
+    with open(
+        path,
+        "rb"
+    ) as file:
 
         while True:
 
@@ -137,52 +165,43 @@ def calculate_sha256(path):
 
 
 # ============================================================
-# 4. Oracle 원본 백업
-#
-# 데이터가 동일하면 같은 백업을 또 만들지 않음.
-#
-# 하지만 데이터셋 생성 자체는 항상 다시 수행됨.
-# 즉 코드 수정 후 재실행해도 정상 작동.
+# 5. 원본 파일 백업
 # ============================================================
 
-def archive_raw_file(year, path):
+def archive_file(year, path):
+
+    if not path.exists():
+        return
 
     file_hash = calculate_sha256(path)
 
-    existing_files = list(
+    existing = list(
         ARCHIVE_DIR.glob(
             f"{year}_OE_*_{file_hash[:10]}.csv"
         )
     )
 
-    if existing_files:
+    # 동일한 파일은 다시 백업하지 않음
+    if existing:
+        return
 
-        print(
-            f"[{year}] 동일한 원본 백업 존재"
-        )
-
-        return file_hash
-
-
-    today = datetime.now().strftime(
-        "%Y%m%d"
+    timestamp = datetime.now().strftime(
+        "%Y%m%d_%H%M%S"
     )
 
     archive_path = (
         ARCHIVE_DIR
         / (
             f"{year}_OE_"
-            f"{today}_"
+            f"{timestamp}_"
             f"{file_hash[:10]}.csv"
         )
     )
-
 
     shutil.copy2(
         path,
         archive_path
     )
-
 
     print(
         f"[{year}] 원본 백업:",
@@ -190,18 +209,226 @@ def archive_raw_file(year, path):
     )
 
 
-    return file_hash
+# ============================================================
+# 6. 2026 Oracle 최신 파일 자동 다운로드
+# ============================================================
+
+def download_latest_2026():
+
+    if not AUTO_DOWNLOAD_2026:
+
+        print(
+            "[2026] 자동 다운로드 비활성화"
+        )
+
+        return
+
+
+    output_path = RAW_FILES[2026]
+
+    temp_path = (
+        RAW_DIR
+        / "2026_oracle_download_temp.csv"
+    )
+
+
+    if temp_path.exists():
+        temp_path.unlink()
+
+
+    print()
+    print(
+        "======================================"
+    )
+
+    print(
+        "[2026] Oracle 최신 데이터 다운로드"
+    )
+
+    print(
+        "======================================"
+    )
+
+    print(
+        "Google Drive에서 다운로드 중..."
+    )
+
+
+    try:
+
+        result = gdown.download(
+            id=ORACLE_2026_FILE_ID,
+            output=str(temp_path),
+            quiet=False
+        )
+
+    except Exception as error:
+
+        print()
+        print(
+            "[2026] 다운로드 실패:"
+        )
+
+        print(error)
+
+        if output_path.exists():
+
+            print(
+                "기존 2026 파일을 사용합니다."
+            )
+
+            return
+
+        raise
+
+
+    if (
+        result is None
+        or not temp_path.exists()
+    ):
+
+        if output_path.exists():
+
+            print(
+                "[2026] 다운로드 실패"
+            )
+
+            print(
+                "기존 2026 파일을 사용합니다."
+            )
+
+            return
+
+        raise RuntimeError(
+            "2026 Oracle 데이터를 "
+            "다운로드하지 못했습니다."
+        )
+
+
+    # --------------------------------------------------------
+    # 실제 CSV인지 확인
+    # --------------------------------------------------------
+
+    try:
+
+        test_df = pd.read_csv(
+            temp_path,
+            nrows=5,
+            low_memory=False
+        )
+
+        if len(test_df.columns) < 5:
+
+            raise ValueError(
+                "다운로드한 파일의 컬럼 수가 비정상적입니다."
+            )
+
+    except Exception as error:
+
+        temp_path.unlink(
+            missing_ok=True
+        )
+
+        if output_path.exists():
+
+            print()
+            print(
+                "[2026] 다운로드 파일이 정상 CSV가 아닙니다."
+            )
+
+            print(error)
+
+            print(
+                "기존 2026 파일을 사용합니다."
+            )
+
+            return
+
+        raise
+
+
+    new_hash = calculate_sha256(
+        temp_path
+    )
+
+
+    # ========================================================
+    # 기존 파일과 비교
+    # ========================================================
+
+    if output_path.exists():
+
+        old_hash = calculate_sha256(
+            output_path
+        )
+
+
+        if new_hash == old_hash:
+
+            print()
+            print(
+                "[2026] Oracle 데이터 변경 없음"
+            )
+
+            print(
+                "기존 2026 파일을 그대로 사용합니다."
+            )
+
+            temp_path.unlink()
+
+            return
+
+
+        print()
+        print(
+            "[2026] 새로운 데이터 확인"
+        )
+
+        print(
+            "기존 2026 파일을 백업합니다."
+        )
+
+        archive_file(
+            2026,
+            output_path
+        )
+
+
+    # ========================================================
+    # 최신 파일로 교체
+    # ========================================================
+
+    shutil.move(
+        str(temp_path),
+        str(output_path)
+    )
+
+
+    print()
+    print(
+        "[2026] 최신 Oracle 데이터 저장 완료:"
+    )
+
+    print(output_path)
+
+    print(
+        "SHA256:",
+        new_hash[:16]
+    )
 
 
 # ============================================================
-# 5. 2025 + 2026 Oracle 파일 읽기
+# 7. 2025 + 2026 Oracle 읽기
 # ============================================================
 
 def load_oracle_files():
 
     frames = []
-
     hashes = {}
+
+
+    # 2026만 자동 다운로드
+    download_latest_2026()
 
 
     for year in TARGET_YEARS:
@@ -213,23 +440,22 @@ def load_oracle_files():
 
             raise FileNotFoundError(
 
-                f"\n{year} Oracle CSV를 찾을 수 없습니다.\n\n"
+                f"\n{year} Oracle CSV가 없습니다.\n\n"
 
                 f"파일 위치:\n"
                 f"{path}\n"
             )
 
 
-        print(
-            f"[{year}] Oracle 데이터 읽는 중..."
+        archive_file(
+            year,
+            path
         )
 
 
-        hashes[year] = (
-            archive_raw_file(
-                year,
-                path
-            )
+        print()
+        print(
+            f"[{year}] Oracle CSV 읽는 중..."
         )
 
 
@@ -241,6 +467,13 @@ def load_oracle_files():
 
         # 원본에 year가 없을 경우 대비
         df["_source_year"] = year
+
+
+        hashes[year] = (
+            calculate_sha256(
+                path
+            )
+        )
 
 
         print(
@@ -258,11 +491,21 @@ def load_oracle_files():
     )
 
 
-    return combined, hashes
+    print()
+    print(
+        "2025 + 2026 전체 행:",
+        len(combined)
+    )
+
+
+    return (
+        combined,
+        hashes
+    )
 
 
 # ============================================================
-# 6. Oracle 컬럼 확인
+# 8. Oracle Schema 확인
 # ============================================================
 
 def get_schema(df):
@@ -367,7 +610,6 @@ def get_schema(df):
                 "url"
             ),
 
-        # Oracle 파일에 시리즈/매치 ID가 있다면 우선 사용
         "series":
             find_column(
                 df,
@@ -379,7 +621,7 @@ def get_schema(df):
     }
 
 
-    required_columns = [
+    required = [
 
         "league",
         "date",
@@ -398,7 +640,7 @@ def get_schema(df):
         column
 
         for column
-        in required_columns
+        in required
 
         if schema[column] is None
     ]
@@ -408,26 +650,31 @@ def get_schema(df):
 
         print()
         print(
-            "Oracle 실제 컬럼:"
+            "Oracle CSV 실제 컬럼:"
         )
 
         print(
             df.columns.tolist()
         )
 
-
         raise ValueError(
             f"필수 컬럼 없음: {missing}"
         )
 
 
-    # Pick / Ban 확인
+    # ========================================================
+    # Ban / Pick 컬럼 확인
+    # ========================================================
+
     for prefix in [
         "ban",
         "pick"
     ]:
 
-        for i in range(1, 6):
+        for i in range(
+            1,
+            6
+        ):
 
             column = (
                 f"{prefix}{i}"
@@ -444,24 +691,47 @@ def get_schema(df):
 
 
 # ============================================================
-# 7. 챔피언 추출
+# 9. Ban / Pick 챔피언 추출
+#
+# 중요:
+# Ban이 비어 있으면 NO_BAN으로 처리
+# Pick이 비어 있으면 None 유지
 # ============================================================
 
-def get_champions(row, prefix):
+def get_champions(
+    row,
+    prefix
+):
 
     champions = []
 
 
-    for i in range(1, 6):
+    for i in range(
+        1,
+        6
+    ):
 
-        champion = clean_value(
+        value = clean_value(
             row[
                 f"{prefix}{i}"
             ]
         )
 
+
+        # ====================================================
+        # 밴 카드 포기
+        # ====================================================
+
+        if (
+            prefix == "ban"
+            and value is None
+        ):
+
+            value = NO_BAN_TOKEN
+
+
         champions.append(
-            champion
+            value
         )
 
 
@@ -469,17 +739,15 @@ def get_champions(row, prefix):
 
 
 # ============================================================
-# 8. First Pick
+# 10. First Pick 판별
 # ============================================================
 
 def is_first_pick(
     row,
-    first_pick_column
+    column
 ):
 
-    value = row[
-        first_pick_column
-    ]
+    value = row[column]
 
 
     if pd.isna(value):
@@ -503,7 +771,167 @@ def is_first_pick(
 
 
 # ============================================================
-# 9. Oracle 원본 → 경기 단위
+# 11. 실패 경기 정보 추출
+# ============================================================
+
+def get_failed_game_context(
+    game_rows,
+    schema
+):
+
+    failed_year = None
+    failed_date = None
+    failed_blue_team = None
+    failed_red_team = None
+
+
+    # ========================================================
+    # Year
+    # ========================================================
+
+    try:
+
+        if schema["year"] is not None:
+
+            values = (
+                game_rows[
+                    schema["year"]
+                ]
+                .dropna()
+            )
+
+            if not values.empty:
+
+                failed_year = int(
+                    float(
+                        values.iloc[0]
+                    )
+                )
+
+
+        if failed_year is None:
+
+            values = (
+                game_rows[
+                    "_source_year"
+                ]
+                .dropna()
+            )
+
+            if not values.empty:
+
+                failed_year = int(
+                    values.iloc[0]
+                )
+
+    except Exception:
+        pass
+
+
+    # ========================================================
+    # Date
+    # ========================================================
+
+    try:
+
+        values = (
+            game_rows[
+                schema["date"]
+            ]
+            .dropna()
+        )
+
+        if not values.empty:
+
+            failed_date = (
+                values.iloc[0]
+            )
+
+    except Exception:
+        pass
+
+
+    # ========================================================
+    # Teams
+    # ========================================================
+
+    try:
+
+        team_rows = game_rows[
+
+            game_rows[
+                schema["position"]
+            ]
+            .astype(str)
+            .str.lower()
+            == "team"
+
+        ]
+
+
+        blue_rows = team_rows[
+
+            team_rows[
+                schema["side"]
+            ]
+            .astype(str)
+            .str.lower()
+            == "blue"
+
+        ]
+
+
+        red_rows = team_rows[
+
+            team_rows[
+                schema["side"]
+            ]
+            .astype(str)
+            .str.lower()
+            == "red"
+
+        ]
+
+
+        if not blue_rows.empty:
+
+            failed_blue_team = clean_value(
+                blue_rows.iloc[0][
+                    schema["teamname"]
+                ]
+            )
+
+
+        if not red_rows.empty:
+
+            failed_red_team = clean_value(
+                red_rows.iloc[0][
+                    schema["teamname"]
+                ]
+            )
+
+    except Exception:
+        pass
+
+
+    return {
+
+        "year":
+            failed_year,
+
+        "date":
+            failed_date,
+
+        "blue_team":
+            failed_blue_team,
+
+        "red_team":
+            failed_red_team
+    }
+
+
+# ============================================================
+# 12. Oracle → 경기 단위 Dataset
 # ============================================================
 
 def build_base_games(
@@ -514,9 +942,9 @@ def build_base_games(
     df = full_df.copy()
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # 날짜 변환
-    # --------------------------------------------------------
+    # ========================================================
 
     df[
         schema["date"]
@@ -533,7 +961,7 @@ def build_base_games(
 
 
     # ========================================================
-    # LCK만 추출
+    # LCK 필터
     # ========================================================
 
     lck = df[
@@ -587,10 +1015,7 @@ def build_base_games(
 
 
     # ========================================================
-    # 원본 LCK 데이터 보존
-    #
-    # Oracle 컬럼을 삭제하지 않음.
-    # 나중에 KDA, KP, Damage 등을 사용할 수 있음.
+    # Oracle LCK 원본 그대로 보존
     # ========================================================
 
     lck.to_csv(
@@ -605,7 +1030,6 @@ def build_base_games(
 
 
     games = []
-
     failed = []
 
 
@@ -613,16 +1037,19 @@ def build_base_games(
     # gameid 단위 처리
     # ========================================================
 
-    for game_id, game_rows in lck.groupby(
+    for (
+        game_id,
+        game_rows
+    ) in lck.groupby(
         schema["gameid"],
         sort=False
     ):
 
         try:
 
-            # ------------------------------------------------
+            # =================================================
             # Team 행
-            # ------------------------------------------------
+            # =================================================
 
             team_rows = game_rows[
 
@@ -674,9 +1101,9 @@ def build_base_games(
             red = red_rows.iloc[0]
 
 
-            # ------------------------------------------------
-            # 연도
-            # ------------------------------------------------
+            # =================================================
+            # Year
+            # =================================================
 
             if schema["year"] is not None:
 
@@ -697,9 +1124,9 @@ def build_base_games(
                 )
 
 
-            # ------------------------------------------------
-            # 팀
-            # ------------------------------------------------
+            # =================================================
+            # Teams
+            # =================================================
 
             blue_team = clean_value(
                 blue[
@@ -714,44 +1141,40 @@ def build_base_games(
             )
 
 
-            # ------------------------------------------------
+            # =================================================
             # Ban / Pick
-            # ------------------------------------------------
+            # =================================================
 
-            blue_bans = (
-                get_champions(
-                    blue,
-                    "ban"
-                )
+            blue_bans = get_champions(
+                blue,
+                "ban"
             )
 
-            red_bans = (
-                get_champions(
-                    red,
-                    "ban"
-                )
+            red_bans = get_champions(
+                red,
+                "ban"
             )
 
-            blue_picks = (
-                get_champions(
-                    blue,
-                    "pick"
-                )
+            blue_picks = get_champions(
+                blue,
+                "pick"
             )
 
-            red_picks = (
-                get_champions(
-                    red,
-                    "pick"
-                )
+            red_picks = get_champions(
+                red,
+                "pick"
             )
 
 
-            all_draft = (
+            # =================================================
+            # 중요:
+            #
+            # BAN은 NO_BAN 허용
+            # PICK만 누락 검사
+            # =================================================
 
-                blue_bans
-                + red_bans
-                + blue_picks
+            all_picks = (
+                blue_picks
                 + red_picks
             )
 
@@ -759,34 +1182,30 @@ def build_base_games(
             if any(
                 champion is None
                 for champion
-                in all_draft
+                in all_picks
             ):
 
                 raise ValueError(
-                    "밴/픽 정보 누락"
+                    "픽 정보 누락"
                 )
 
 
-            # ------------------------------------------------
+            # =================================================
             # First Pick
-            # ------------------------------------------------
+            # =================================================
 
-            blue_first = (
-                is_first_pick(
-                    blue,
-                    schema[
-                        "firstpick"
-                    ]
-                )
+            blue_first = is_first_pick(
+                blue,
+                schema[
+                    "firstpick"
+                ]
             )
 
-            red_first = (
-                is_first_pick(
-                    red,
-                    schema[
-                        "firstpick"
-                    ]
-                )
+            red_first = is_first_pick(
+                red,
+                schema[
+                    "firstpick"
+                ]
             )
 
 
@@ -817,9 +1236,9 @@ def build_base_games(
                 )
 
 
-            # ------------------------------------------------
+            # =================================================
             # 승패
-            # ------------------------------------------------
+            # =================================================
 
             blue_result = int(
                 float(
@@ -871,7 +1290,7 @@ def build_base_games(
 
 
             # =================================================
-            # 기본 Record
+            # 경기 기본 정보
             # =================================================
 
             record = {
@@ -906,9 +1325,9 @@ def build_base_games(
                                 schema["split"]
                             ]
                         )
-                        if schema[
-                            "split"
-                        ]
+
+                        if schema["split"]
+
                         else None
                     ),
 
@@ -919,9 +1338,9 @@ def build_base_games(
                                 schema["playoffs"]
                             ]
                         )
-                        if schema[
-                            "playoffs"
-                        ]
+
+                        if schema["playoffs"]
+
                         else None
                     ),
 
@@ -932,9 +1351,9 @@ def build_base_games(
                                 schema["patch"]
                             ]
                         )
-                        if schema[
-                            "patch"
-                        ]
+
+                        if schema["patch"]
+
                         else None
                     ),
 
@@ -947,9 +1366,11 @@ def build_base_games(
                                 ]
                             ]
                         )
+
                         if schema[
                             "datacompleteness"
                         ]
+
                         else None
                     ),
 
@@ -960,9 +1381,9 @@ def build_base_games(
                                 schema["url"]
                             ]
                         )
-                        if schema[
-                            "url"
-                        ]
+
+                        if schema["url"]
+
                         else None
                     ),
 
@@ -973,9 +1394,9 @@ def build_base_games(
                                 schema["series"]
                             ]
                         )
-                        if schema[
-                            "series"
-                        ]
+
+                        if schema["series"]
+
                         else None
                     ),
 
@@ -989,9 +1410,9 @@ def build_base_games(
                                 schema["teamid"]
                             ]
                         )
-                        if schema[
-                            "teamid"
-                        ]
+
+                        if schema["teamid"]
+
                         else None
                     ),
 
@@ -1005,9 +1426,9 @@ def build_base_games(
                                 schema["teamid"]
                             ]
                         )
-                        if schema[
-                            "teamid"
-                        ]
+
+                        if schema["teamid"]
+
                         else None
                     ),
 
@@ -1029,7 +1450,7 @@ def build_base_games(
 
 
             # =================================================
-            # Pick / Ban 컬럼
+            # Ban / Pick 저장
             # =================================================
 
             for i in range(5):
@@ -1056,12 +1477,44 @@ def build_base_games(
             )
 
 
+        # ====================================================
+        # Failed Game
+        # ====================================================
+
         except Exception as error:
+
+            context = (
+                get_failed_game_context(
+                    game_rows,
+                    schema
+                )
+            )
+
 
             failed.append({
 
+                "year":
+                    context[
+                        "year"
+                    ],
+
+                "date":
+                    context[
+                        "date"
+                    ],
+
                 "game_id":
                     str(game_id),
+
+                "blue_team":
+                    context[
+                        "blue_team"
+                    ],
+
+                "red_team":
+                    context[
+                        "red_team"
+                    ],
 
                 "reason":
                     str(error)
@@ -1072,18 +1525,46 @@ def build_base_games(
         games
     )
 
-
     failed_df = pd.DataFrame(
         failed
     )
 
 
-    games_df = games_df.sort_values(
-        [
-            "date",
-            "game_id"
-        ]
-    ).reset_index(drop=True)
+    if not games_df.empty:
+
+        games_df = (
+
+            games_df
+            .sort_values(
+                [
+                    "date",
+                    "game_id"
+                ]
+            )
+            .reset_index(
+                drop=True
+            )
+        )
+
+
+    if not failed_df.empty:
+
+        failed_df = (
+
+            failed_df
+            .sort_values(
+                [
+                    "year",
+                    "date",
+                    "game_id"
+                ],
+
+                na_position="last"
+            )
+            .reset_index(
+                drop=True
+            )
+        )
 
 
     return (
@@ -1094,7 +1575,7 @@ def build_base_games(
 
 
 # ============================================================
-# 10. 팀 식별자
+# 13. 팀 식별자
 # ============================================================
 
 def team_identity(
@@ -1127,7 +1608,7 @@ def team_identity(
 
 
 # ============================================================
-# 11. BO3 / BO5 Series 생성
+# 14. BO3 / BO5 Series ID
 # ============================================================
 
 def assign_series_ids(
@@ -1137,35 +1618,38 @@ def assign_series_ids(
     games = games.copy()
 
 
-    games["team_pair"] = (
-        games.apply(
+    games[
+        "team_pair"
+    ] = games.apply(
 
-            lambda row:
-            "|".join(
-                sorted([
-                    team_identity(
-                        row,
-                        "blue"
-                    ),
+        lambda row:
 
-                    team_identity(
-                        row,
-                        "red"
-                    )
-                ])
-            ),
+        "|".join(
+            sorted([
+                team_identity(
+                    row,
+                    "blue"
+                ),
 
-            axis=1
-        )
+                team_identity(
+                    row,
+                    "red"
+                )
+            ])
+        ),
+
+        axis=1
     )
 
 
-    games["series_id"] = None
+    games[
+        "series_id"
+    ] = None
 
 
-    # --------------------------------------------------------
-    # Oracle 자체 시리즈 ID가 있다면 우선 사용
-    # --------------------------------------------------------
+    # ========================================================
+    # Oracle에 시리즈 ID가 있으면 우선 사용
+    # ========================================================
 
     if (
         "source_series_id"
@@ -1193,9 +1677,9 @@ def assign_series_ids(
         )
 
 
-    # --------------------------------------------------------
-    # 없는 경우 직접 추정
-    # --------------------------------------------------------
+    # ========================================================
+    # 없는 경우 직접 묶기
+    # ========================================================
 
     for pair, group in (
         games.groupby(
@@ -1204,18 +1688,18 @@ def assign_series_ids(
         )
     ):
 
-        group = group.sort_values(
-            [
-                "date",
-                "game_number"
-            ]
+        group = (
+            group.sort_values(
+                [
+                    "date",
+                    "game_number"
+                ]
+            )
         )
 
 
         current_series_id = None
-
         previous_date = None
-
         previous_game_number = None
 
         series_count = 0
@@ -1225,7 +1709,7 @@ def assign_series_ids(
             group.iterrows()
         ):
 
-            # 이미 Oracle Series ID가 있음
+            # Oracle Series ID 존재
             if pd.notna(
                 games.at[
                     index,
@@ -1265,7 +1749,9 @@ def assign_series_ids(
 
 
             elif (
-                row["game_number"]
+                row[
+                    "game_number"
+                ]
                 == 1
             ):
 
@@ -1273,7 +1759,9 @@ def assign_series_ids(
 
 
             elif (
-                row["game_number"]
+                row[
+                    "game_number"
+                ]
                 <= previous_game_number
             ):
 
@@ -1371,7 +1859,7 @@ def assign_series_ids(
 
 
 # ============================================================
-# 12. Fearless Draft
+# 15. Fearless Draft
 # ============================================================
 
 def add_fearless_information(
@@ -1385,11 +1873,9 @@ def add_fearless_information(
         "fearless_unavailable_before_game"
     ] = None
 
-
     games[
         "fearless_unavailable_count"
     ] = 0
-
 
     games[
         "fearless_repeat_detected"
@@ -1403,11 +1889,13 @@ def add_fearless_information(
         )
     ):
 
-        group = group.sort_values(
-            [
-                "game_number",
-                "date"
-            ]
+        group = (
+            group.sort_values(
+                [
+                    "game_number",
+                    "date"
+                ]
+            )
         )
 
 
@@ -1419,22 +1907,25 @@ def add_fearless_information(
         ):
 
             fearless_active = (
+
                 int(
                     game["year"]
                 )
+
                 in FEARLESS_YEARS
             )
 
 
-            if fearless_active:
+            unavailable = (
 
-                unavailable = list(
+                list(
                     previously_picked
                 )
 
-            else:
+                if fearless_active
 
-                unavailable = []
+                else []
+            )
 
 
             games.at[
@@ -1454,9 +1945,11 @@ def add_fearless_information(
             )
 
 
-            # ------------------------------------------------
-            # 현재 게임에서 선택된 10개 챔피언
-            # ------------------------------------------------
+            # =================================================
+            # 현재 경기 Pick 10개
+            #
+            # NO_BAN은 여기와 아무 관계 없음
+            # =================================================
 
             current_picks = []
 
@@ -1493,7 +1986,7 @@ def add_fearless_information(
 
             if (
                 fearless_active
-                and len(repeats) > 0
+                and repeats
             ):
 
                 games.at[
@@ -1502,7 +1995,7 @@ def add_fearless_information(
                 ] = True
 
 
-            # 다음 세트용
+            # 다음 경기용 누적
             if fearless_active:
 
                 for champion in (
@@ -1523,27 +2016,28 @@ def add_fearless_information(
 
 
 # ============================================================
-# 13. 팀 과거 승률 Feature
-#
-# 주의:
-# 항상 현재 경기 결과를 넣기 전에 계산한다.
+# 16. 팀 과거 승률 Feature
 # ============================================================
 
 def add_team_history(
     games
 ):
 
-    games = games.copy()
+    games = (
 
-
-    games = games.sort_values(
-        [
-            "date",
-            "series_id",
-            "game_number",
-            "game_id"
-        ]
-    ).reset_index(drop=True)
+        games.copy()
+        .sort_values(
+            [
+                "date",
+                "series_id",
+                "game_number",
+                "game_id"
+            ]
+        )
+        .reset_index(
+            drop=True
+        )
+    )
 
 
     # 전체
@@ -1551,17 +2045,17 @@ def add_team_history(
         lambda: [0, 0]
     )
 
-    # 연도별
+    # 시즌
     season = defaultdict(
         lambda: [0, 0]
     )
 
-    # 진영별
+    # 진영
     side_stats = defaultdict(
         lambda: [0, 0]
     )
 
-    # 패치별
+    # 패치
     patch_stats = defaultdict(
         lambda: [0, 0]
     )
@@ -1571,7 +2065,7 @@ def add_team_history(
         lambda: [0, 0]
     )
 
-    # 최근 10경기
+    # 최근 10 경기
     recent_results = defaultdict(
         lambda: deque(
             maxlen=10
@@ -1603,7 +2097,7 @@ def add_team_history(
 
 
         # ====================================================
-        # 현재 경기 이전 통계
+        # 현재 경기 이전 통계 계산
         # ====================================================
 
         for (
@@ -1629,15 +2123,19 @@ def add_team_history(
         ]:
 
             # ------------------------------------------------
-            # 전체 승률
+            # 전체
             # ------------------------------------------------
 
             total_games = (
-                overall[team][0]
+                overall[
+                    team
+                ][0]
             )
 
             total_wins = (
-                overall[team][1]
+                overall[
+                    team
+                ][1]
             )
 
 
@@ -1663,7 +2161,7 @@ def add_team_history(
 
 
             # ------------------------------------------------
-            # 시즌 승률
+            # 시즌
             # ------------------------------------------------
 
             (
@@ -1699,7 +2197,7 @@ def add_team_history(
 
 
             # ------------------------------------------------
-            # 최근 5
+            # 최근 5 / 10
             # ------------------------------------------------
 
             recent = list(
@@ -1709,15 +2207,16 @@ def add_team_history(
             )
 
 
-            last5 = (
-                recent[-5:]
-            )
+            last5 = recent[-5:]
+            last10 = recent[-10:]
 
 
             games.at[
                 index,
                 f"{prefix}_last5_games"
-            ] = len(last5)
+            ] = len(
+                last5
+            )
 
 
             games.at[
@@ -1731,25 +2230,18 @@ def add_team_history(
                     )
                 )
 
-                if len(last5) > 0
+                if last5
 
                 else np.nan
-            )
-
-
-            # ------------------------------------------------
-            # 최근 10
-            # ------------------------------------------------
-
-            last10 = (
-                recent[-10:]
             )
 
 
             games.at[
                 index,
                 f"{prefix}_last10_games"
-            ] = len(last10)
+            ] = len(
+                last10
+            )
 
 
             games.at[
@@ -1763,7 +2255,7 @@ def add_team_history(
                     )
                 )
 
-                if len(last10) > 0
+                if last10
 
                 else np.nan
             )
@@ -1862,7 +2354,7 @@ def add_team_history(
         # ====================================================
         # 현재 경기 결과
         #
-        # 위 Feature를 모두 만든 다음 반영
+        # Feature를 만든 후 반영
         # ====================================================
 
         blue_win = int(
@@ -1871,7 +2363,6 @@ def add_team_history(
             ]
             == 1
         )
-
 
         red_win = int(
             game[
@@ -1882,11 +2373,22 @@ def add_team_history(
 
 
         # 전체
-        overall[blue][0] += 1
-        overall[blue][1] += blue_win
+        overall[
+            blue
+        ][0] += 1
 
-        overall[red][0] += 1
-        overall[red][1] += red_win
+        overall[
+            blue
+        ][1] += blue_win
+
+
+        overall[
+            red
+        ][0] += 1
+
+        overall[
+            red
+        ][1] += red_win
 
 
         # 시즌
@@ -2031,9 +2533,7 @@ def add_team_history(
 
 
 # ============================================================
-# 14. 실제 밴픽 순서
-#
-# 우리가 확인한 20단계 순서
+# 17. 실제 20단계 밴픽 순서
 # ============================================================
 
 def reconstruct_draft_actions(
@@ -2044,60 +2544,34 @@ def reconstruct_draft_actions(
     first_pick_side
 ):
 
-    if (
-        first_pick_side
-        == "BLUE"
-    ):
+    if first_pick_side == "BLUE":
 
         first_side = "BLUE"
         second_side = "RED"
 
-        first_bans = (
-            blue_bans
-        )
+        first_bans = blue_bans
+        second_bans = red_bans
 
-        second_bans = (
-            red_bans
-        )
-
-        first_picks = (
-            blue_picks
-        )
-
-        second_picks = (
-            red_picks
-        )
+        first_picks = blue_picks
+        second_picks = red_picks
 
 
-    elif (
-        first_pick_side
-        == "RED"
-    ):
+    elif first_pick_side == "RED":
 
         first_side = "RED"
         second_side = "BLUE"
 
-        first_bans = (
-            red_bans
-        )
+        first_bans = red_bans
+        second_bans = blue_bans
 
-        second_bans = (
-            blue_bans
-        )
-
-        first_picks = (
-            red_picks
-        )
-
-        second_picks = (
-            blue_picks
-        )
+        first_picks = red_picks
+        second_picks = blue_picks
 
 
     else:
 
         raise ValueError(
-            "잘못된 First Pick"
+            "First Pick 오류"
         )
 
 
@@ -2270,7 +2744,7 @@ def reconstruct_draft_actions(
 
 
     # ========================================================
-    # order
+    # Order
     # ========================================================
 
     for order, action in enumerate(
@@ -2278,16 +2752,16 @@ def reconstruct_draft_actions(
         start=1
     ):
 
-        action["order"] = (
-            order
-        )
+        action[
+            "order"
+        ] = order
 
 
     return actions
 
 
 # ============================================================
-# 15. Draft Action Dataset
+# 18. 승률 Feature 목록
 # ============================================================
 
 HISTORY_COLUMNS = [
@@ -2339,6 +2813,10 @@ HISTORY_COLUMNS = [
     "red_h2h_win_rate_before"
 ]
 
+
+# ============================================================
+# 19. Draft Action Dataset
+# ============================================================
 
 def build_actions(
     games
@@ -2417,11 +2895,6 @@ def build_actions(
 
 
         for action in actions:
-
-            acting_side = (
-                action["side"]
-            )
-
 
             row = {
 
@@ -2515,7 +2988,6 @@ def build_actions(
                         "fearless_unavailable_count"
                     ],
 
-                # 경기 결과
                 "winner_side":
                     game[
                         "winner_side"
@@ -2528,7 +3000,9 @@ def build_actions(
 
                 "acting_side_won":
                     int(
-                        acting_side
+                        action[
+                            "side"
+                        ]
                         == game[
                             "winner_side"
                         ]
@@ -2536,7 +3010,6 @@ def build_actions(
             }
 
 
-            # 승률 Feature
             for column in (
                 HISTORY_COLUMNS
             ):
@@ -2557,12 +3030,10 @@ def build_actions(
 
 
 # ============================================================
-# 16. Training Sample CSV
+# 20. Training Sample Dataset
 #
-# 모델을 학습시키는 코드는 아니고,
-# 나중에 바로 학습하기 편한 형태로만 저장.
-#
-# 현재 Draft → 다음 챔피언
+# 실제 모델 학습은 하지 않고
+# 학습하기 편한 형태의 CSV만 생성
 # ============================================================
 
 def build_training_samples(
@@ -2579,12 +3050,14 @@ def build_training_samples(
         )
     ):
 
-        group = group.sort_values(
-            "order"
+        group = (
+            group.sort_values(
+                "order"
+            )
         )
 
 
-        state = []
+        draft_state = []
 
 
         for _, action in (
@@ -2651,13 +3124,9 @@ def build_training_samples(
                         "order"
                     ],
 
-                # --------------------------------------------
-                # 현재까지 진행된 Draft
-                # --------------------------------------------
-
                 "draft_state":
                     json.dumps(
-                        state,
+                        draft_state,
                         ensure_ascii=False
                     ),
 
@@ -2670,10 +3139,6 @@ def build_training_samples(
                     action[
                         "fearless_unavailable_count"
                     ],
-
-                # --------------------------------------------
-                # 다음 행동
-                # --------------------------------------------
 
                 "next_phase":
                     action[
@@ -2690,15 +3155,11 @@ def build_training_samples(
                         "action"
                     ],
 
-                # 모델 정답 후보
+                # NO_BAN도 정상적인 target이 될 수 있음
                 "target_champion":
                     action[
                         "champion"
                     ],
-
-                # --------------------------------------------
-                # 결과 Label
-                # --------------------------------------------
 
                 "winner_side":
                     action[
@@ -2717,7 +3178,6 @@ def build_training_samples(
             }
 
 
-            # 승률 Feature
             for column in (
                 HISTORY_COLUMNS
             ):
@@ -2732,8 +3192,7 @@ def build_training_samples(
             )
 
 
-            # 현재 Action 추가
-            state.append({
+            draft_state.append({
 
                 "order":
                     int(
@@ -2770,18 +3229,18 @@ def build_training_samples(
 
 
 # ============================================================
-# 17. Champion 과거 승률
+# 21. Champion History
 # ============================================================
 
 def build_champion_history(
     games
 ):
 
-    overall_stats = defaultdict(
+    overall = defaultdict(
         lambda: [0, 0]
     )
 
-    season_stats = defaultdict(
+    season = defaultdict(
         lambda: [0, 0]
     )
 
@@ -2789,7 +3248,7 @@ def build_champion_history(
         lambda: [0, 0]
     )
 
-    team_champion_stats = defaultdict(
+    team_champion = defaultdict(
         lambda: [0, 0]
     )
 
@@ -2797,13 +3256,15 @@ def build_champion_history(
     records = []
 
 
-    games = games.sort_values(
-        [
-            "date",
-            "series_id",
-            "game_number",
-            "game_id"
-        ]
+    games = (
+        games.sort_values(
+            [
+                "date",
+                "series_id",
+                "game_number",
+                "game_id"
+            ]
+        )
     )
 
 
@@ -2847,11 +3308,9 @@ def build_champion_history(
             )
 
 
-            for pick_index in (
-                range(
-                    1,
-                    6
-                )
+            for pick_index in range(
+                1,
+                6
             ):
 
                 champion = (
@@ -2862,11 +3321,6 @@ def build_champion_history(
                 )
 
 
-                overall_key = (
-                    champion
-                )
-
-
                 season_key = (
                     champion,
                     int(
@@ -2874,12 +3328,10 @@ def build_champion_history(
                     )
                 )
 
-
                 patch_key = (
                     champion,
                     game["patch"]
                 )
-
 
                 team_champion_key = (
                     team_key,
@@ -2890,41 +3342,33 @@ def build_champion_history(
                 (
                     overall_games,
                     overall_wins
-                ) = (
-                    overall_stats[
-                        overall_key
-                    ]
-                )
+                ) = overall[
+                    champion
+                ]
 
 
                 (
                     season_games,
                     season_wins
-                ) = (
-                    season_stats[
-                        season_key
-                    ]
-                )
+                ) = season[
+                    season_key
+                ]
 
 
                 (
                     patch_games,
                     patch_wins
-                ) = (
-                    patch_stats[
-                        patch_key
-                    ]
-                )
+                ) = patch_stats[
+                    patch_key
+                ]
 
 
                 (
-                    tc_games,
-                    tc_wins
-                ) = (
-                    team_champion_stats[
-                        team_champion_key
-                    ]
-                )
+                    team_games,
+                    team_wins
+                ) = team_champion[
+                    team_champion_key
+                ]
 
 
                 records.append({
@@ -2971,7 +3415,7 @@ def build_champion_history(
                     "pick_index":
                         pick_index,
 
-                    # 전체
+                    # 전체 챔피언 성적
                     "champion_games_before":
                         overall_games,
 
@@ -2984,7 +3428,7 @@ def build_champion_history(
                             overall_games
                         ),
 
-                    # 시즌
+                    # 시즌 챔피언 성적
                     "champion_season_games_before":
                         season_games,
 
@@ -2997,7 +3441,7 @@ def build_champion_history(
                             season_games
                         ),
 
-                    # 패치
+                    # 패치 챔피언 성적
                     "champion_patch_games_before":
                         patch_games,
 
@@ -3012,18 +3456,18 @@ def build_champion_history(
 
                     # 팀 + 챔피언
                     "team_champion_games_before":
-                        tc_games,
+                        team_games,
 
                     "team_champion_wins_before":
-                        tc_wins,
+                        team_wins,
 
                     "team_champion_win_rate_before":
                         calculate_rate(
-                            tc_wins,
-                            tc_games
+                            team_wins,
+                            team_games
                         ),
 
-                    # 현재 경기 결과 Label
+                    # 결과 Label
                     "picked_side_won":
                         won
                 })
@@ -3031,7 +3475,7 @@ def build_champion_history(
 
                 updates.append((
 
-                    overall_key,
+                    champion,
                     season_key,
                     patch_key,
                     team_champion_key,
@@ -3040,31 +3484,31 @@ def build_champion_history(
 
 
         # ====================================================
-        # 현재 경기 결과는 Feature 기록 후 반영
+        # 현재 경기 결과는 기록 후 반영
         # ====================================================
 
         for (
-            overall_key,
+            champion,
             season_key,
             patch_key,
-            tc_key,
+            team_champion_key,
             won
         ) in updates:
 
-            overall_stats[
-                overall_key
+            overall[
+                champion
             ][0] += 1
 
-            overall_stats[
-                overall_key
+            overall[
+                champion
             ][1] += won
 
 
-            season_stats[
+            season[
                 season_key
             ][0] += 1
 
-            season_stats[
+            season[
                 season_key
             ][1] += won
 
@@ -3078,12 +3522,12 @@ def build_champion_history(
             ][1] += won
 
 
-            team_champion_stats[
-                tc_key
+            team_champion[
+                team_champion_key
             ][0] += 1
 
-            team_champion_stats[
-                tc_key
+            team_champion[
+                team_champion_key
             ][1] += won
 
 
@@ -3093,7 +3537,7 @@ def build_champion_history(
 
 
 # ============================================================
-# 18. 저장
+# 22. Dataset 저장
 # ============================================================
 
 def save_datasets(
@@ -3104,113 +3548,109 @@ def save_datasets(
 ):
 
     # ========================================================
-    # 전체 2025 + 2026
+    # 2025 + 2026 전체
     # ========================================================
 
     games.to_csv(
+
         PROCESSED_DIR
         / "lck_games_2025_2026.csv",
+
         index=False,
+
         encoding="utf-8-sig"
     )
 
 
     actions.to_csv(
+
         PROCESSED_DIR
         / "lck_draft_actions_2025_2026.csv",
+
         index=False,
+
         encoding="utf-8-sig"
     )
 
 
     training.to_csv(
+
         PROCESSED_DIR
         / "lck_training_samples_2025_2026.csv",
+
         index=False,
+
         encoding="utf-8-sig"
     )
 
 
     champion_history.to_csv(
+
         PROCESSED_DIR
         / "lck_champion_history_2025_2026.csv",
+
         index=False,
+
         encoding="utf-8-sig"
     )
 
 
     # ========================================================
-    # 연도별로 보기 편하도록 별도 저장
+    # 연도별 파일
     # ========================================================
 
-    games[
-        games["year"]
-        == 2025
-    ].to_csv(
-        PROCESSED_DIR
-        / "lck_games_2025.csv",
-        index=False,
-        encoding="utf-8-sig"
-    )
+    for year in TARGET_YEARS:
+
+        games[
+            games[
+                "year"
+            ]
+            == year
+        ].to_csv(
+
+            PROCESSED_DIR
+            / f"lck_games_{year}.csv",
+
+            index=False,
+
+            encoding="utf-8-sig"
+        )
 
 
-    games[
-        games["year"]
-        == 2026
-    ].to_csv(
-        PROCESSED_DIR
-        / "lck_games_2026.csv",
-        index=False,
-        encoding="utf-8-sig"
-    )
+        actions[
+            actions[
+                "year"
+            ]
+            == year
+        ].to_csv(
+
+            PROCESSED_DIR
+            / f"lck_draft_actions_{year}.csv",
+
+            index=False,
+
+            encoding="utf-8-sig"
+        )
 
 
-    actions[
-        actions["year"]
-        == 2025
-    ].to_csv(
-        PROCESSED_DIR
-        / "lck_draft_actions_2025.csv",
-        index=False,
-        encoding="utf-8-sig"
-    )
+        training[
+            training[
+                "year"
+            ]
+            == year
+        ].to_csv(
 
+            PROCESSED_DIR
+            / f"lck_training_samples_{year}.csv",
 
-    actions[
-        actions["year"]
-        == 2026
-    ].to_csv(
-        PROCESSED_DIR
-        / "lck_draft_actions_2026.csv",
-        index=False,
-        encoding="utf-8-sig"
-    )
+            index=False,
 
-
-    training[
-        training["year"]
-        == 2025
-    ].to_csv(
-        PROCESSED_DIR
-        / "lck_training_samples_2025.csv",
-        index=False,
-        encoding="utf-8-sig"
-    )
-
-
-    training[
-        training["year"]
-        == 2026
-    ].to_csv(
-        PROCESSED_DIR
-        / "lck_training_samples_2026.csv",
-        index=False,
-        encoding="utf-8-sig"
-    )
+            encoding="utf-8-sig"
+        )
 
 
 # ============================================================
-# 19. MAIN
+# 23. MAIN
 # ============================================================
 
 def main():
@@ -3221,11 +3661,11 @@ def main():
     )
 
     print(
-        "Oracle's Elixir"
+        "Oracle's Elixir LCK Dataset Builder"
     )
 
     print(
-        "2025 + 2026 LCK Dataset Builder"
+        "2025 Local + 2026 Auto Download"
     )
 
     print(
@@ -3234,12 +3674,13 @@ def main():
 
 
     # ========================================================
-    # Oracle CSV
+    # Oracle 파일 읽기
     # ========================================================
 
-    full_df, source_hashes = (
-        load_oracle_files()
-    )
+    (
+        full_df,
+        source_hashes
+    ) = load_oracle_files()
 
 
     schema = (
@@ -3250,7 +3691,7 @@ def main():
 
 
     # ========================================================
-    # 경기 데이터 생성
+    # 경기 Dataset
     # ========================================================
 
     (
@@ -3265,30 +3706,33 @@ def main():
 
     print()
     print(
-        "완성된 전체 LCK 경기:",
-        len(games)
+        "LCK 경기 추출 완료"
     )
 
 
     print(
-        "2025 경기:",
-        (
-            games[
-                "year"
-            ]
-            == 2025
-        ).sum()
+        "2025:",
+        int(
+            (
+                games[
+                    "year"
+                ]
+                == 2025
+            ).sum()
+        )
     )
 
 
     print(
-        "2026 경기:",
-        (
-            games[
-                "year"
-            ]
-            == 2026
-        ).sum()
+        "2026:",
+        int(
+            (
+                games[
+                    "year"
+                ]
+                == 2026
+            ).sum()
+        )
     )
 
 
@@ -3315,7 +3759,7 @@ def main():
 
 
     # ========================================================
-    # 팀 과거 승률
+    # 과거 승률
     # ========================================================
 
     games = (
@@ -3326,7 +3770,7 @@ def main():
 
 
     # ========================================================
-    # Draft Actions
+    # Draft Action
     # ========================================================
 
     actions = (
@@ -3337,7 +3781,7 @@ def main():
 
 
     # ========================================================
-    # Training Samples
+    # Training Sample
     # ========================================================
 
     training = (
@@ -3371,17 +3815,74 @@ def main():
 
 
     # ========================================================
-    # 실패 경기
+    # Failed Games
     # ========================================================
+
+    failed_path = (
+        PROCESSED_DIR
+        / "failed_games.csv"
+    )
+
 
     if not failed.empty:
 
         failed.to_csv(
-            PROCESSED_DIR
-            / "failed_games.csv",
+
+            failed_path,
+
             index=False,
+
             encoding="utf-8-sig"
         )
+
+
+        print()
+        print(
+            "실패 경기 연도별:"
+        )
+
+
+        print(
+            failed[
+                "year"
+            ]
+            .value_counts(
+                dropna=False
+            )
+            .sort_index()
+        )
+
+
+    elif failed_path.exists():
+
+        # 이전 실행 실패 파일 제거
+        failed_path.unlink()
+
+
+    # ========================================================
+    # NO_BAN 통계
+    # ========================================================
+
+    no_ban_count = int(
+        (
+            actions[
+                "champion"
+            ]
+            == NO_BAN_TOKEN
+        ).sum()
+    )
+
+
+    no_ban_games = int(
+        actions[
+            actions[
+                "champion"
+            ]
+            == NO_BAN_TOKEN
+        ][
+            "game_id"
+        ].nunique()
+    )
 
 
     # ========================================================
@@ -3402,8 +3903,17 @@ def main():
         "years":
             TARGET_YEARS,
 
+        "2025_source":
+            "local",
+
+        "2026_source_google_drive_id":
+            ORACLE_2026_FILE_ID,
+
         "source_sha256":
             source_hashes,
+
+        "no_ban_token":
+            NO_BAN_TOKEN,
 
         "raw_lck_rows":
             len(raw_lck),
@@ -3414,7 +3924,9 @@ def main():
         "games_2025":
             int(
                 (
-                    games["year"]
+                    games[
+                        "year"
+                    ]
                     == 2025
                 ).sum()
             ),
@@ -3422,7 +3934,9 @@ def main():
         "games_2026":
             int(
                 (
-                    games["year"]
+                    games[
+                        "year"
+                    ]
                     == 2026
                 ).sum()
             ),
@@ -3438,28 +3952,82 @@ def main():
                 champion_history
             ),
 
+        "no_ban_actions":
+            no_ban_count,
+
+        "games_with_no_ban":
+            no_ban_games,
+
         "failed_games":
-            len(failed)
+            len(failed),
+
+        "failed_games_2025":
+            (
+                int(
+                    (
+                        failed[
+                            "year"
+                        ]
+                        == 2025
+                    ).sum()
+                )
+
+                if (
+                    not failed.empty
+                    and "year"
+                    in failed.columns
+                )
+
+                else 0
+            ),
+
+        "failed_games_2026":
+            (
+                int(
+                    (
+                        failed[
+                            "year"
+                        ]
+                        == 2026
+                    ).sum()
+                )
+
+                if (
+                    not failed.empty
+                    and "year"
+                    in failed.columns
+                )
+
+                else 0
+            )
     }
 
 
     with open(
+
         PROCESSED_DIR
         / "dataset_metadata.json",
+
         "w",
+
         encoding="utf-8"
+
     ) as file:
 
         json.dump(
+
             metadata,
+
             file,
+
             ensure_ascii=False,
+
             indent=2
         )
 
 
     # ========================================================
-    # 결과
+    # 완료 출력
     # ========================================================
 
     print()
@@ -3475,56 +4043,104 @@ def main():
         "======================================"
     )
 
+
     print(
         "전체 경기:",
         len(games)
     )
 
-    print(
-        "2025:",
-        (
-            games[
-                "year"
-            ]
-            == 2025
-        ).sum()
-    )
 
     print(
-        "2026:",
-        (
-            games[
-                "year"
-            ]
-            == 2026
-        ).sum()
+        "2025 경기:",
+        int(
+            (
+                games[
+                    "year"
+                ]
+                == 2025
+            ).sum()
+        )
     )
+
+
+    print(
+        "2026 경기:",
+        int(
+            (
+                games[
+                    "year"
+                ]
+                == 2026
+            ).sum()
+        )
+    )
+
 
     print(
         "Draft Actions:",
         len(actions)
     )
 
+
     print(
         "Training Samples:",
         len(training)
     )
 
-    print(
-        "Champion History:",
-        len(champion_history)
-    )
 
     print(
-        "실패 경기:",
+        "Champion History:",
+        len(
+            champion_history
+        )
+    )
+
+
+    print()
+    print(
+        "Failed Games:",
         len(failed)
     )
 
-    print()
 
+    if not failed.empty:
+
+        failed_2025 = int(
+            (
+                failed[
+                    "year"
+                ]
+                == 2025
+            ).sum()
+        )
+
+        failed_2026 = int(
+            (
+                failed[
+                    "year"
+                ]
+                == 2026
+            ).sum()
+        )
+
+
+        print(
+            "  - 2025 실패:",
+            failed_2025
+        )
+
+
+        print(
+            "  - 2026 실패:",
+            failed_2026
+        )
+
+
+    print()
     print(
         "생성 파일:"
     )
+
 
     print(
         "data/processed/lck_raw_2025_2026.csv"
@@ -3571,5 +4187,13 @@ def main():
     )
 
 
+    if not failed.empty:
+
+        print(
+            "data/processed/failed_games.csv"
+        )
+
+
 if __name__ == "__main__":
+
     main()
