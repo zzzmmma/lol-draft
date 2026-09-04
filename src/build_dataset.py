@@ -3537,120 +3537,87 @@ def build_champion_history(
 
 
 # ============================================================
-# 22. Dataset 저장
+# 22. 입력 경기 기준 전체 파생 Dataset 생성
+#
+# 이 함수의 모든 누적 통계는 호출할 때마다 새로 시작한다.
+# 따라서 2026 경기만 전달하면 2025 기록이 섞이지 않는다.
 # ============================================================
 
-def save_datasets(
-    games,
-    actions,
-    training,
-    champion_history
+def process_dataset(base_games):
+
+    games = assign_series_ids(
+        base_games.copy()
+    )
+
+    games = add_fearless_information(
+        games
+    )
+
+    games = add_team_history(
+        games
+    )
+
+    actions = build_actions(
+        games
+    )
+
+    training = build_training_samples(
+        actions
+    )
+
+    champion_history = build_champion_history(
+        games
+    )
+
+    return {
+        "games": games,
+        "actions": actions,
+        "training": training,
+        "champion_history": champion_history
+    }
+
+
+# ============================================================
+# 23. Dataset 저장
+# ============================================================
+
+def save_dataset(
+    dataset,
+    output_suffix
 ):
 
-    # ========================================================
-    # 2025 + 2026 전체
-    # ========================================================
+    output_files = {
+        "games": f"lck_games_{output_suffix}.csv",
+        "actions": f"lck_draft_actions_{output_suffix}.csv",
+        "training": f"lck_training_samples_{output_suffix}.csv",
+        "champion_history": (
+            f"lck_champion_history_{output_suffix}.csv"
+        )
+    }
 
-    games.to_csv(
+    for dataset_name, filename in output_files.items():
 
-        PROCESSED_DIR
-        / "lck_games_2025_2026.csv",
-
-        index=False,
-
-        encoding="utf-8-sig"
-    )
-
-
-    actions.to_csv(
-
-        PROCESSED_DIR
-        / "lck_draft_actions_2025_2026.csv",
-
-        index=False,
-
-        encoding="utf-8-sig"
-    )
-
-
-    training.to_csv(
-
-        PROCESSED_DIR
-        / "lck_training_samples_2025_2026.csv",
-
-        index=False,
-
-        encoding="utf-8-sig"
-    )
-
-
-    champion_history.to_csv(
-
-        PROCESSED_DIR
-        / "lck_champion_history_2025_2026.csv",
-
-        index=False,
-
-        encoding="utf-8-sig"
-    )
-
-
-    # ========================================================
-    # 연도별 파일
-    # ========================================================
-
-    for year in TARGET_YEARS:
-
-        games[
-            games[
-                "year"
-            ]
-            == year
-        ].to_csv(
-
-            PROCESSED_DIR
-            / f"lck_games_{year}.csv",
-
+        dataset[dataset_name].to_csv(
+            PROCESSED_DIR / filename,
             index=False,
-
             encoding="utf-8-sig"
         )
 
 
-        actions[
-            actions[
-                "year"
-            ]
-            == year
-        ].to_csv(
+def get_no_ban_statistics(actions):
 
-            PROCESSED_DIR
-            / f"lck_draft_actions_{year}.csv",
+    no_ban_actions = actions[
+        actions["champion"] == NO_BAN_TOKEN
+    ]
 
-            index=False,
-
-            encoding="utf-8-sig"
-        )
-
-
-        training[
-            training[
-                "year"
-            ]
-            == year
-        ].to_csv(
-
-            PROCESSED_DIR
-            / f"lck_training_samples_{year}.csv",
-
-            index=False,
-
-            encoding="utf-8-sig"
-        )
+    return {
+        "actions": len(no_ban_actions),
+        "games": no_ban_actions["game_id"].nunique()
+    }
 
 
 # ============================================================
-# 23. MAIN
+# 24. MAIN
 # ============================================================
 
 def main():
@@ -3737,68 +3704,27 @@ def main():
 
 
     # ========================================================
-    # Series
+    # 2025 + 2026 통합 Dataset
     # ========================================================
 
-    games = (
-        assign_series_ids(
-            games
-        )
+    combined_dataset = process_dataset(
+        games.copy()
     )
 
 
     # ========================================================
-    # Fearless
+    # 2026 완전 독립 Dataset
+    #
+    # 통합 Dataset을 필터링하지 않고, base games 단계에서
+    # 2026 경기만 분리한 뒤 모든 파생 정보를 다시 계산한다.
     # ========================================================
 
-    games = (
-        add_fearless_information(
-            games
-        )
-    )
+    only_2026_games = games[
+        games["year"] == 2026
+    ].copy()
 
-
-    # ========================================================
-    # 과거 승률
-    # ========================================================
-
-    games = (
-        add_team_history(
-            games
-        )
-    )
-
-
-    # ========================================================
-    # Draft Action
-    # ========================================================
-
-    actions = (
-        build_actions(
-            games
-        )
-    )
-
-
-    # ========================================================
-    # Training Sample
-    # ========================================================
-
-    training = (
-        build_training_samples(
-            actions
-        )
-    )
-
-
-    # ========================================================
-    # Champion History
-    # ========================================================
-
-    champion_history = (
-        build_champion_history(
-            games
-        )
+    only_2026_dataset = process_dataset(
+        only_2026_games
     )
 
 
@@ -3806,11 +3732,29 @@ def main():
     # CSV 저장
     # ========================================================
 
-    save_datasets(
-        games,
-        actions,
-        training,
-        champion_history
+    save_dataset(
+        combined_dataset,
+        "2025_2026"
+    )
+
+    save_dataset(
+        only_2026_dataset,
+        "2026_only"
+    )
+
+
+    combined_games = combined_dataset["games"]
+    combined_actions = combined_dataset["actions"]
+    combined_training = combined_dataset["training"]
+    combined_champion_history = (
+        combined_dataset["champion_history"]
+    )
+
+    only_2026_processed_games = only_2026_dataset["games"]
+    only_2026_actions = only_2026_dataset["actions"]
+    only_2026_training = only_2026_dataset["training"]
+    only_2026_champion_history = (
+        only_2026_dataset["champion_history"]
     )
 
 
@@ -3863,25 +3807,12 @@ def main():
     # NO_BAN 통계
     # ========================================================
 
-    no_ban_count = int(
-        (
-            actions[
-                "champion"
-            ]
-            == NO_BAN_TOKEN
-        ).sum()
+    combined_no_ban = get_no_ban_statistics(
+        combined_actions
     )
 
-
-    no_ban_games = int(
-        actions[
-            actions[
-                "champion"
-            ]
-            == NO_BAN_TOKEN
-        ][
-            "game_id"
-        ].nunique()
+    only_2026_no_ban = get_no_ban_statistics(
+        only_2026_actions
     )
 
 
@@ -3919,12 +3850,12 @@ def main():
             len(raw_lck),
 
         "games_total":
-            len(games),
+            len(combined_games),
 
         "games_2025":
             int(
                 (
-                    games[
+                    combined_games[
                         "year"
                     ]
                     == 2025
@@ -3934,7 +3865,7 @@ def main():
         "games_2026":
             int(
                 (
-                    games[
+                    combined_games[
                         "year"
                     ]
                     == 2026
@@ -3942,21 +3873,39 @@ def main():
             ),
 
         "draft_actions":
-            len(actions),
+            len(combined_actions),
 
         "training_samples":
-            len(training),
+            len(combined_training),
 
         "champion_history_rows":
             len(
-                champion_history
+                combined_champion_history
             ),
 
         "no_ban_actions":
-            no_ban_count,
+            combined_no_ban["actions"],
 
         "games_with_no_ban":
-            no_ban_games,
+            combined_no_ban["games"],
+
+        "games_2026_only":
+            len(only_2026_processed_games),
+
+        "draft_actions_2026_only":
+            len(only_2026_actions),
+
+        "training_samples_2026_only":
+            len(only_2026_training),
+
+        "champion_history_rows_2026_only":
+            len(only_2026_champion_history),
+
+        "no_ban_actions_2026_only":
+            only_2026_no_ban["actions"],
+
+        "games_with_no_ban_2026_only":
+            only_2026_no_ban["games"],
 
         "failed_games":
             len(failed),
@@ -4044,55 +3993,24 @@ def main():
     )
 
 
-    print(
-        "전체 경기:",
-        len(games)
-    )
-
-
-    print(
-        "2025 경기:",
-        int(
-            (
-                games[
-                    "year"
-                ]
-                == 2025
-            ).sum()
-        )
-    )
-
-
-    print(
-        "2026 경기:",
-        int(
-            (
-                games[
-                    "year"
-                ]
-                == 2026
-            ).sum()
-        )
-    )
-
-
-    print(
-        "Draft Actions:",
-        len(actions)
-    )
-
-
-    print(
-        "Training Samples:",
-        len(training)
-    )
-
-
+    print()
+    print("[2025 + 2026 통합]")
+    print("경기:", len(combined_games))
+    print("Draft Actions:", len(combined_actions))
+    print("Training Samples:", len(combined_training))
     print(
         "Champion History:",
-        len(
-            champion_history
-        )
+        len(combined_champion_history)
+    )
+
+    print()
+    print("[2026 독립]")
+    print("경기:", len(only_2026_processed_games))
+    print("Draft Actions:", len(only_2026_actions))
+    print("Training Samples:", len(only_2026_training))
+    print(
+        "Champion History:",
+        len(only_2026_champion_history)
     )
 
 
@@ -4151,23 +4069,7 @@ def main():
     )
 
     print(
-        "data/processed/lck_games_2025.csv"
-    )
-
-    print(
-        "data/processed/lck_games_2026.csv"
-    )
-
-    print(
         "data/processed/lck_draft_actions_2025_2026.csv"
-    )
-
-    print(
-        "data/processed/lck_draft_actions_2025.csv"
-    )
-
-    print(
-        "data/processed/lck_draft_actions_2026.csv"
     )
 
     print(
@@ -4175,15 +4077,23 @@ def main():
     )
 
     print(
-        "data/processed/lck_training_samples_2025.csv"
-    )
-
-    print(
-        "data/processed/lck_training_samples_2026.csv"
-    )
-
-    print(
         "data/processed/lck_champion_history_2025_2026.csv"
+    )
+
+    print(
+        "data/processed/lck_games_2026_only.csv"
+    )
+
+    print(
+        "data/processed/lck_draft_actions_2026_only.csv"
+    )
+
+    print(
+        "data/processed/lck_training_samples_2026_only.csv"
+    )
+
+    print(
+        "data/processed/lck_champion_history_2026_only.csv"
     )
 
 
