@@ -1,0 +1,25 @@
+{
+  "passed": true,
+  "checks": {
+    "ten_position_rows_per_game": true,
+    "one_of_each_position_per_team": true,
+    "mapping_failures_have_no_labels": true,
+    "picks_match_position_rows": true,
+    "oracle_player_mapping": true,
+    "champion_strictly_prior_counts": true,
+    "champion_rates": true,
+    "champion_patch_strictly_prior_counts": true,
+    "champion_patch_rates": true,
+    "team_champion_strictly_prior_counts": true,
+    "team_champion_rates": true,
+    "possible_roles_and_flex_thresholds": true,
+    "first_game_position_history_zero": true,
+    "action_position_labels_pick_only": true,
+    "target_position_labels_pick_only": true,
+    "role_states_use_prior_history_and_prior_picks_only": true
+  },
+  "games_checked": 1045,
+  "mapped_games": 1045,
+  "role_mapping_failures": 0,
+  "role_mapping_failure_details": []
+}

@@ -1,5 +1,5 @@
 {
-  "processed_at": "2026-09-04T12:50:54.911362",
+  "processed_at": "2026-09-06T14:28:08.144803",
   "source": "Oracle's Elixir",
   "league": "LCK",
   "years": [
@@ -10,25 +10,108 @@
   "2026_source_google_drive_id": "1hnpbrUpBMS1TZI7IovfpKeZfWJH1Aptm",
   "source_sha256": {
     "2025": "c9a158b9e0a965a47d31d3674c127a26f75e6c91a324bd1858e4784b1336214a",
-    "2026": "b598d7c77071f50919ef5c073ddef5ece1777380f3e535848597b5bce69bed71"
+    "2026": "7851b882b95fb8fc5ae8b9983f6c243ebcd001529e577f348e1af957b39494c7"
   },
   "no_ban_token": "NO_BAN",
-  "raw_lck_rows": 12444,
-  "games_total": 1037,
+  "raw_lck_rows": 12540,
+  "games_total": 1045,
   "games_2025": 555,
-  "games_2026": 482,
-  "draft_actions": 20740,
-  "training_samples": 20740,
-  "champion_history_rows": 10370,
+  "games_2026": 490,
+  "draft_actions": 20900,
+  "training_samples": 20900,
+  "champion_history_rows": 10450,
   "no_ban_actions": 1,
   "games_with_no_ban": 1,
-  "games_2026_only": 482,
-  "draft_actions_2026_only": 9640,
-  "training_samples_2026_only": 9640,
-  "champion_history_rows_2026_only": 4820,
+  "games_2026_only": 490,
+  "draft_actions_2026_only": 9800,
+  "training_samples_2026_only": 9800,
+  "champion_history_rows_2026_only": 4900,
   "no_ban_actions_2026_only": 0,
   "games_with_no_ban_2026_only": 0,
   "failed_games": 0,
   "failed_games_2025": 0,
-  "failed_games_2026": 0
+  "failed_games_2026": 0,
+  "champion_position_history_rows": 10450,
+  "champion_position_history_rows_2026_only": 4900,
+  "flex_pick_rows": 1073,
+  "flex_pick_rows_2026_only": 470,
+  "role_mapping_failures": 0,
+  "role_mapping_failures_2026_only": 0,
+  "role_qa": {
+    "2025_2026": {
+      "passed": true,
+      "checks": {
+        "ten_position_rows_per_game": true,
+        "one_of_each_position_per_team": true,
+        "mapping_failures_have_no_labels": true,
+        "picks_match_position_rows": true,
+        "oracle_player_mapping": true,
+        "champion_strictly_prior_counts": true,
+        "champion_rates": true,
+        "champion_patch_strictly_prior_counts": true,
+        "champion_patch_rates": true,
+        "team_champion_strictly_prior_counts": true,
+        "team_champion_rates": true,
+        "possible_roles_and_flex_thresholds": true,
+        "first_game_position_history_zero": true,
+        "action_position_labels_pick_only": true,
+        "target_position_labels_pick_only": true,
+        "role_states_use_prior_history_and_prior_picks_only": true
+      },
+      "games_checked": 1045,
+      "mapped_games": 1045,
+      "role_mapping_failures": 0,
+      "role_mapping_failure_details": []
+    },
+    "2026_only": {
+      "passed": true,
+      "checks": {
+        "ten_position_rows_per_game": true,
+        "one_of_each_position_per_team": true,
+        "mapping_failures_have_no_labels": true,
+        "picks_match_position_rows": true,
+        "oracle_player_mapping": true,
+        "champion_strictly_prior_counts": true,
+        "champion_rates": true,
+        "champion_patch_strictly_prior_counts": true,
+        "champion_patch_rates": true,
+        "team_champion_strictly_prior_counts": true,
+        "team_champion_rates": true,
+        "possible_roles_and_flex_thresholds": true,
+        "first_game_position_history_zero": true,
+        "action_position_labels_pick_only": true,
+        "target_position_labels_pick_only": true,
+        "role_states_use_prior_history_and_prior_picks_only": true
+      },
+      "games_checked": 490,
+      "mapped_games": 490,
+      "role_mapping_failures": 0,
+      "role_mapping_failure_details": []
+    }
+  },
+  "role_feature_policy": {
+    "positions": [
+      "top",
+      "jng",
+      "mid",
+      "bot",
+      "sup"
+    ],
+    "min_role_games": 3,
+    "min_role_rate": 0.1,
+    "possible_roles_source": "champion overall history strictly before game date",
+    "no_history_rates": 0.0,
+    "insufficient_history_possible_roles": [],
+    "role_state_rates": "all five roles; no smoothing or final_position fallback",
+    "role_state_timing": "before target action; candidates are historical priors, not forced lane assignments",
+    "label_only_columns": [
+      "final_position",
+      "picked_final_position",
+      "target_position"
+    ],
+    "pick_index": "1-based pick slot within side, same as existing champion_history",
+    "mapping_failure_policy": "retain existing draft rows; all game role labels null; skip role history update",
+    "same_timestamp_policy": "snapshot all games before accumulating any of their positions",
+    "independent_2026_only": true
+  }
 }

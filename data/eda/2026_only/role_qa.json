@@ -1,0 +1,41 @@
+{
+  "passed": true,
+  "issue_counts": {
+    "Actions PICK Position 누락": 0,
+    "Actions BAN Position 존재": 0,
+    "Training PICK Position 누락": 0,
+    "Training BAN Position 존재": 0,
+    "Position History 허용되지 않은 Position": 0,
+    "Actions 허용되지 않은 Position": 0,
+    "Training 허용되지 않은 Position": 0,
+    "final_position 누락": 0,
+    "possible_roles JSON 파싱/리스트 형식 오류": 0,
+    "possible_roles 허용되지 않은 Role": 0,
+    "possible_roles 중복 Role": 0,
+    "possible_role_count와 리스트 길이 불일치": 0,
+    "is_flex_before 형식 오류": 0,
+    "Flex 여부와 Role 개수 불일치": 0,
+    "Actions 경기별 Position/PICK 행 수 불일치": 0,
+    "Training 경기별 Position/PICK 행 수 불일치": 0,
+    "blue_role_state JSON/Role/비율 형식 오류": 0,
+    "blue_role_state 정답 Position 입력 노출": 0,
+    "blue_role_state 이전 Draft Pick과 상태 불일치": 0,
+    "red_role_state JSON/Role/비율 형식 오류": 0,
+    "red_role_state 정답 Position 입력 노출": 0,
+    "red_role_state 이전 Draft Pick과 상태 불일치": 0,
+    "2026-only History 다른 연도/연도 누락": 0,
+    "2026-only Actions 다른 연도/연도 누락": 0,
+    "2026-only Training 다른 연도/연도 누락": 0,
+    "2026-only 날짜 누락/파싱 오류": 0,
+    "첫 경기 champion_total_position_games_before 0 아님/누락": 0,
+    "첫 경기 champion_top_games_before 0 아님/누락": 0,
+    "첫 경기 champion_jng_games_before 0 아님/누락": 0,
+    "첫 경기 champion_mid_games_before 0 아님/누락": 0,
+    "첫 경기 champion_bot_games_before 0 아님/누락": 0,
+    "첫 경기 champion_sup_games_before 0 아님/누락": 0
+  },
+  "first_game_leakage_checked": true,
+  "first_game_ids": [
+    "LOLTMNT03_337058"
+  ]
+}

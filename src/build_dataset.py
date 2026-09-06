@@ -3,8 +3,11 @@ from collections import defaultdict, deque
 from datetime import datetime
 import hashlib
 import json
+import os
 import re
 import shutil
+import tempfile
+import unicodedata
 
 import gdown
 import numpy as np
@@ -28,6 +31,12 @@ MAX_SERIES_GAP_HOURS = 12
 # 밴 카드를 사용하지 않은 경우 저장할 값
 NO_BAN_TOKEN = "NO_BAN"
 
+# Role 후보는 경기 이전 전체 챔피언 이력만 사용한다.
+# 표본 부족은 [] (미확인)이며 최종 포지션으로 보충하지 않는다.
+POSITIONS = ("top", "jng", "mid", "bot", "sup")
+MIN_ROLE_GAMES = 3
+MIN_ROLE_RATE = 0.10
+
 
 # ============================================================
 # 1. 2026 Oracle 자동 다운로드 설정
@@ -44,9 +53,10 @@ ORACLE_2026_FILE_ID = (
 # 2. 폴더 경로
 # ============================================================
 
-RAW_DIR = Path("data/raw")
-ARCHIVE_DIR = Path("data/raw_archive")
-PROCESSED_DIR = Path("data/processed")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+RAW_DIR = PROJECT_ROOT / "data/raw"
+ARCHIVE_DIR = PROJECT_ROOT / "data/raw_archive"
+PROCESSED_DIR = PROJECT_ROOT / "data/processed"
 
 RAW_DIR.mkdir(
     parents=True,
@@ -213,6 +223,33 @@ def archive_file(year, path):
 # 6. 2026 Oracle 최신 파일 자동 다운로드
 # ============================================================
 
+def use_local_2026_or_raise(output_path, temp_path, error):
+
+    # 실패한 다운로드 파일은 원본 교체에 사용하지 않는다.
+    try:
+        temp_path.unlink(missing_ok=True)
+    except OSError as cleanup_error:
+        print(
+            f"[2026] 경고: 다운로드 임시 파일 정리 실패: {cleanup_error}"
+        )
+
+    if output_path.is_file():
+        print(
+            f"[2026] 경고: 최신 Oracle 데이터 다운로드/검증 실패: {error}"
+        )
+        print(
+            f"[2026] 기존 로컬 CSV를 fallback으로 사용합니다: {output_path}"
+        )
+        return
+
+    raise RuntimeError(
+        "[2026] Oracle 데이터 다운로드/검증에 실패했고 "
+        "기존 로컬 CSV도 없습니다.\n"
+        f"로컬 CSV 확인 경로: {output_path}\n"
+        f"실패 원인: {error}"
+    ) from error
+
+
 def download_latest_2026():
 
     if not AUTO_DOWNLOAD_2026:
@@ -264,22 +301,8 @@ def download_latest_2026():
 
     except Exception as error:
 
-        print()
-        print(
-            "[2026] 다운로드 실패:"
-        )
-
-        print(error)
-
-        if output_path.exists():
-
-            print(
-                "기존 2026 파일을 사용합니다."
-            )
-
-            return
-
-        raise
+        use_local_2026_or_raise(output_path, temp_path, error)
+        return
 
 
     if (
@@ -287,22 +310,12 @@ def download_latest_2026():
         or not temp_path.exists()
     ):
 
-        if output_path.exists():
-
-            print(
-                "[2026] 다운로드 실패"
-            )
-
-            print(
-                "기존 2026 파일을 사용합니다."
-            )
-
-            return
-
-        raise RuntimeError(
-            "2026 Oracle 데이터를 "
-            "다운로드하지 못했습니다."
+        error = RuntimeError(
+            "gdown이 다운로드 결과를 반환하지 않았거나 "
+            "다운로드한 임시 파일이 없습니다."
         )
+        use_local_2026_or_raise(output_path, temp_path, error)
+        return
 
 
     # --------------------------------------------------------
@@ -325,26 +338,8 @@ def download_latest_2026():
 
     except Exception as error:
 
-        temp_path.unlink(
-            missing_ok=True
-        )
-
-        if output_path.exists():
-
-            print()
-            print(
-                "[2026] 다운로드 파일이 정상 CSV가 아닙니다."
-            )
-
-            print(error)
-
-            print(
-                "기존 2026 파일을 사용합니다."
-            )
-
-            return
-
-        raise
+        use_local_2026_or_raise(output_path, temp_path, error)
+        return
 
 
     new_hash = calculate_sha256(
@@ -1471,6 +1466,11 @@ def build_base_games(
                     f"red_pick{i + 1}"
                 ] = red_picks[i]
 
+
+            # 분석/정답 전용 내부 값. process_dataset에서 기존 games와 분리한다.
+            positions, role_error = extract_final_positions(game_rows, schema, record)
+            record["_final_positions"] = positions
+            record["_role_mapping_error"] = role_error
 
             games.append(
                 record
@@ -3543,10 +3543,309 @@ def build_champion_history(
 # 따라서 2026 경기만 전달하면 2025 기록이 섞이지 않는다.
 # ============================================================
 
+ROLE_SOURCE_COLUMNS = ["_final_positions", "_role_mapping_error"]
+ROLE_HISTORY_SCOPES = {
+    "champion": "champion_total_position_games_before",
+    "champion_patch": "champion_patch_position_games_before",
+    "team_champion": "team_champion_position_games_before",
+}
+POSITION_HISTORY_COLUMNS = [
+    "series_id", "game_id", "game_number", "year", "date", "patch",
+    "side", "team", "champion", "pick_index", "final_position",
+] + [
+    column
+    for prefix, total_column in ROLE_HISTORY_SCOPES.items()
+    for column in (
+        [f"{prefix}_{role}_games_before" for role in POSITIONS]
+        + [total_column]
+        + [f"{prefix}_{role}_rate_before" for role in POSITIONS]
+    )
+] + ["possible_roles_before", "possible_role_count_before", "is_flex_before"]
+ROLE_FAILURE_COLUMNS = [
+    "year", "date", "game_id", "blue_team", "red_team", "category", "reason",
+]
+
+
+def extract_final_positions(game_rows, schema, game):
+    """Oracle 선수 행과 양 팀 Pick의 일대일 대응을 검증한다.
+
+    실패한 경기 전체의 Role label/누적을 보류하지만 기존 Draft 데이터는 유지한다.
+    """
+    champion_column = find_column(game_rows, "champion")
+    if champion_column is None:
+        return {}, "필수 데이터 누락: Oracle champion 열 없음"
+
+    players = game_rows[
+        game_rows[schema["position"]].astype(str).str.strip().str.lower() != "team"
+    ]
+    if len(players) != 10:
+        return {}, f"형식 불일치: 선수 행 {len(players)}개 (정상: 10개)"
+
+    mapping = {"BLUE": {}, "RED": {}}
+    role_counts = {side: defaultdict(int) for side in mapping}
+    for _, player in players.iterrows():
+        side = (clean_value(player[schema["side"]]) or "").upper()
+        role = (clean_value(player[schema["position"]]) or "").lower()
+        champion = clean_value(player[champion_column])
+        team = clean_value(player[schema["teamname"]])
+        if side not in mapping or role not in POSITIONS or not champion or not team:
+            return {}, f"필수 데이터/형식 오류: side={side}, position={role}, champion={champion}, team={team}"
+        if team != game[f"{side.lower()}_team"]:
+            return {}, f"팀 불일치: {side} 선수 팀={team}"
+        if champion in mapping[side]:
+            return {}, f"챔피언 중복: {side} {champion}"
+        mapping[side][champion] = role
+        role_counts[side][role] += 1
+
+    for side in mapping:
+        if any(role_counts[side][role] != 1 for role in POSITIONS):
+            return {}, f"포지션 구성 오류: {side} {dict(role_counts[side])}"
+        picks = [game[f"{side.lower()}_pick{i}"] for i in range(1, 6)]
+        if len(set(picks)) != 5 or set(picks) != set(mapping[side]):
+            return {}, f"Pick/선수 챔피언 불일치: {side} picks={picks}, players={list(mapping[side])}"
+    if len(set(mapping["BLUE"]) | set(mapping["RED"])) != 10:
+        return {}, "챔피언 중복: 양 팀의 Pick 챔피언이 10종이 아님"
+    return mapping, None
+
+
+def position_snapshot(counts, prefix, total_column):
+    total = sum(counts.values())
+    snapshot = {total_column: total}
+    for role in POSITIONS:
+        snapshot[f"{prefix}_{role}_games_before"] = counts.get(role, 0)
+        # 새 Role 비율은 표본이 없으면 0. 기존 calculate_rate 정책은 변경하지 않는다.
+        snapshot[f"{prefix}_{role}_rate_before"] = counts.get(role, 0) / total if total else 0.0
+    return snapshot
+
+
+def build_champion_position_history(games, role_sources):
+    if MIN_ROLE_GAMES < 1 or not 0 < MIN_ROLE_RATE <= 1:
+        raise ValueError("MIN_ROLE_GAMES >= 1, 0 < MIN_ROLE_RATE <= 1 이어야 합니다.")
+    histories = {scope: defaultdict(lambda: defaultdict(int)) for scope in ROLE_HISTORY_SCOPES}
+    records, failures = [], []
+    ordered = games.sort_values(["date", "series_id", "game_number", "game_id"])
+    # 같은 시각의 경기끼리도 결과가 섞이지 않도록 모든 snapshot 후 누적한다.
+    for date, batch in ordered.groupby("date", sort=False, dropna=False):
+        updates = []
+        for _, game in batch.iterrows():
+            source = role_sources.get(game["game_id"], {})
+            mapping = source.get("_final_positions", {})
+            error = source.get("_role_mapping_error")
+            if not mapping and not error:
+                error = "필수 데이터 누락: Oracle 포지션 매칭 정보 없음"
+            if pd.isna(date):
+                error = error or "필수 데이터 누락: 경기 날짜 없음 (Role 이력 누적 불가)"
+            if error:
+                mapping = {}
+                failures.append({
+                    **{key: game[key] for key in ROLE_FAILURE_COLUMNS[:5]},
+                    "category": "role_mapping_failure", "reason": error,
+                })
+            for side in ("BLUE", "RED"):
+                prefix = side.lower()
+                for pick_index in range(1, 6):
+                    champion = game[f"{prefix}_pick{pick_index}"]
+                    keys = {
+                        "champion": champion,
+                        "champion_patch": (champion, clean_value(game["patch"])),
+                        "team_champion": (team_identity(game, prefix), champion),
+                    }
+                    final_position = mapping.get(side, {}).get(champion)
+                    row = {
+                        **{key: game[key] for key in POSITION_HISTORY_COLUMNS[:6]},
+                        "side": side, "team": game[f"{prefix}_team"],
+                        "champion": champion, "pick_index": pick_index,
+                        "final_position": final_position,
+                    }
+                    for scope, total_column in ROLE_HISTORY_SCOPES.items():
+                        counts = histories[scope][keys[scope]] if pd.notna(date) else {}
+                        row.update(position_snapshot(counts, scope, total_column))
+                    possible_roles = [
+                        role for role in POSITIONS
+                        if row[f"champion_{role}_games_before"] >= MIN_ROLE_GAMES
+                        and row[f"champion_{role}_rate_before"] >= MIN_ROLE_RATE
+                    ]
+                    row.update({
+                        "possible_roles_before": json.dumps(possible_roles),
+                        "possible_role_count_before": len(possible_roles),
+                        "is_flex_before": len(possible_roles) >= 2,
+                    })
+                    records.append(row)
+                    if final_position is not None:
+                        updates.append((keys, final_position))
+        for keys, role in updates:
+            for scope in ROLE_HISTORY_SCOPES:
+                histories[scope][keys[scope]][role] += 1
+    return (
+        pd.DataFrame(records, columns=POSITION_HISTORY_COLUMNS),
+        pd.DataFrame(failures, columns=ROLE_FAILURE_COLUMNS),
+    )
+
+
+def role_state_entry(row):
+    """입력 Feature 허용 목록. final_position 및 다른 경기 결과는 포함하지 않는다."""
+    return {
+        "side": row["side"], "champion": row["champion"],
+        "possible_roles": json.loads(row["possible_roles_before"]),
+        "role_rates": {role: row[f"champion_{role}_rate_before"] for role in POSITIONS},
+    }
+
+
+def add_role_columns(actions, training, position_history):
+    lookup = {
+        (row["game_id"], row["side"], row["champion"]): row
+        for row in position_history.to_dict("records")
+    }
+    # 새 label을 기존 draft_state 생성 로직에 전달하지 않는다.
+    actions = actions.copy()
+    training = training.copy()
+    actions["picked_final_position"] = [
+        lookup[(row.game_id, row.side, row.champion)]["final_position"]
+        if row.action == "PICK" else None
+        for row in actions.itertuples()
+    ]
+    training["target_position"] = [
+        lookup[(row.game_id, row.next_side, row.target_champion)]["final_position"]
+        if row.next_action == "PICK" else None
+        for row in training.itertuples()
+    ]
+    states = {"BLUE": [], "RED": []}
+    for row in training.itertuples():
+        # draft_state는 현재 target을 제외한 실제 이전 Action만 포함한다.
+        picked = {"BLUE": [], "RED": []}
+        for action in json.loads(row.draft_state):
+            if action["action"] == "PICK":
+                key = (row.game_id, action["side"], action["champion"])
+                picked[action["side"]].append(role_state_entry(lookup[key]))
+        for side in states:
+            states[side].append(json.dumps(picked[side], ensure_ascii=False, allow_nan=False))
+    for side in states:
+        training[f"{side.lower()}_role_state"] = states[side]
+    return actions, training
+
+
+def validate_role_dataset(dataset, role_sources):
+    """Label 연결, 입력 상태 및 독립적인 날짜별 누적 계산으로 Role QA를 수행한다."""
+    games = dataset["games"]
+    history = dataset["champion_position_history"]
+    failures = dataset["role_mapping_failures"]
+    checks = {}
+    failed_ids = set(failures["game_id"])
+    valid = history[~history["game_id"].isin(failed_ids)]
+    checks["ten_position_rows_per_game"] = (
+        len(history) == 10 * len(games)
+        and history.groupby("game_id").size().eq(10).all()
+        and valid["final_position"].isin(POSITIONS).all()
+    )
+    checks["one_of_each_position_per_team"] = all(
+        sorted(group["final_position"]) == sorted(POSITIONS)
+        for _, group in valid.groupby(["game_id", "side"])
+    )
+    checks["mapping_failures_have_no_labels"] = history.loc[
+        history["game_id"].isin(failed_ids), "final_position"
+    ].isna().all()
+    game_lookup = games.set_index("game_id").to_dict("index")
+    checks["picks_match_position_rows"] = all(
+        row.champion == game_lookup[row.game_id][f"{row.side.lower()}_pick{row.pick_index}"]
+        for row in history.itertuples()
+    )
+    checks["oracle_player_mapping"] = all(
+        row.final_position == role_sources[row.game_id]["_final_positions"][row.side][row.champion]
+        for row in valid.itertuples()
+    )
+
+    # 빌더의 순차 카운터와 독립적으로 날짜별 관측값에서 다시 계산한다.
+    audit = history.copy()
+    audit["_team_key"] = [
+        team_identity(game_lookup[row.game_id], row.side.lower()) for row in history.itertuples()
+    ]
+    audit["_patch_key"] = history["patch"].map(clean_value)
+    group_keys = {
+        "champion": ["champion"],
+        "champion_patch": ["champion", "_patch_key"],
+        "team_champion": ["_team_key", "champion"],
+    }
+    for scope, keys in group_keys.items():
+        counts_ok, rates_ok = True, True
+        expected_total = np.zeros(len(history), dtype=np.int64)
+        for role in POSITIONS:
+            observations = audit.assign(_played=audit["final_position"].eq(role).astype(int))
+            dated = observations[observations["date"].notna()]
+            daily = dated.groupby(keys + ["date"], dropna=False)["_played"].sum().reset_index()
+            daily = daily.sort_values("date")
+            daily["_before"] = daily.groupby(keys, dropna=False)["_played"].cumsum() - daily["_played"]
+            expected = audit[keys + ["date"]].merge(
+                daily[keys + ["date", "_before"]], on=keys + ["date"], how="left", validate="many_to_one",
+            )["_before"].fillna(0).to_numpy(dtype=np.int64)
+            expected_total += expected
+            counts_ok = counts_ok and np.array_equal(history[f"{scope}_{role}_games_before"], expected)
+        counts_ok = counts_ok and np.array_equal(history[ROLE_HISTORY_SCOPES[scope]], expected_total)
+        for role in POSITIONS:
+            expected_rates = np.divide(
+                history[f"{scope}_{role}_games_before"].to_numpy(dtype=float), expected_total,
+                out=np.zeros(len(history)), where=expected_total != 0,
+            )
+            rates_ok = rates_ok and np.allclose(history[f"{scope}_{role}_rate_before"], expected_rates)
+        checks[f"{scope}_strictly_prior_counts"] = counts_ok
+        checks[f"{scope}_rates"] = rates_ok
+
+    checks["possible_roles_and_flex_thresholds"] = all(
+        json.loads(row["possible_roles_before"]) == [
+            role for role in POSITIONS
+            if row[f"champion_{role}_games_before"] >= MIN_ROLE_GAMES
+            and row[f"champion_{role}_rate_before"] >= MIN_ROLE_RATE
+        ]
+        and row["possible_role_count_before"] == len(json.loads(row["possible_roles_before"]))
+        and row["is_flex_before"] == (row["possible_role_count_before"] >= 2)
+        for row in history.to_dict("records")
+    )
+    first = history[history["date"] == history["date"].min()]
+    count_columns = [column for column in history if column.endswith("_games_before")]
+    checks["first_game_position_history_zero"] = first[count_columns].eq(0).all().all()
+
+    # 중복 Pick 자체가 매칭 실패 원인인 경기도 기존 행을 보존하고 QA에 보고한다.
+    lookup_keys = ["game_id", "side", "champion"]
+    lookup = history.drop_duplicates(lookup_keys).set_index(lookup_keys).to_dict("index")
+    labels_ok = True
+    for row in dataset["actions"].itertuples():
+        expected = lookup[(row.game_id, row.side, row.champion)]["final_position"] if row.action == "PICK" else None
+        labels_ok = labels_ok and (
+            pd.isna(row.picked_final_position) if pd.isna(expected) else row.picked_final_position == expected
+        )
+    checks["action_position_labels_pick_only"] = labels_ok
+    labels_ok, states_ok = True, True
+    for row in dataset["training"].itertuples():
+        expected = lookup[(row.game_id, row.next_side, row.target_champion)]["final_position"] if row.next_action == "PICK" else None
+        labels_ok = labels_ok and (pd.isna(row.target_position) if pd.isna(expected) else row.target_position == expected)
+        prior = json.loads(row.draft_state)
+        for side in ("BLUE", "RED"):
+            actual = json.loads(getattr(row, f"{side.lower()}_role_state"))
+            picks = [action for action in prior if action["action"] == "PICK" and action["side"] == side]
+            expected_state = [
+                role_state_entry({"side": side, "champion": action["champion"], **lookup[(row.game_id, side, action["champion"])]})
+                for action in picks
+            ]
+            states_ok = states_ok and actual == expected_state and all(action["order"] < row.step for action in picks)
+    checks["target_position_labels_pick_only"] = labels_ok
+    checks["role_states_use_prior_history_and_prior_picks_only"] = states_ok
+    checks = {key: bool(value) for key, value in checks.items()}
+    return {
+        "passed": all(checks.values()), "checks": checks,
+        "games_checked": len(games), "mapped_games": len(games) - len(failures),
+        "role_mapping_failures": len(failures),
+        "role_mapping_failure_details": json.loads(failures.to_json(orient="records", date_format="iso")),
+    }
+
+
 def process_dataset(base_games):
 
+    role_sources = {
+        row["game_id"]: {key: row[key] for key in ROLE_SOURCE_COLUMNS if key in row}
+        for row in base_games.to_dict("records")
+    }
+
     games = assign_series_ids(
-        base_games.copy()
+        base_games.drop(columns=ROLE_SOURCE_COLUMNS, errors="ignore").copy()
     )
 
     games = add_fearless_information(
@@ -3569,22 +3868,105 @@ def process_dataset(base_games):
         games
     )
 
-    return {
+    position_history, role_failures = build_champion_position_history(games, role_sources)
+    actions, training = add_role_columns(actions, training, position_history)
+
+    dataset = {
         "games": games,
         "actions": actions,
         "training": training,
-        "champion_history": champion_history
+        "champion_history": champion_history,
+        "champion_position_history": position_history,
+        "role_mapping_failures": role_failures,
     }
+    dataset["role_qa"] = validate_role_dataset(dataset, role_sources)
+    return dataset
 
 
 # ============================================================
 # 23. Dataset 저장
 # ============================================================
 
+DROP_PROCESSED_COLUMNS = [
+    "source_url",
+    "source_series_id",
+]
+
+
+def validate_output_component(name):
+    """Windows/macOS에서 같은 파일명으로 저장되도록 검사하며 임의로 고치지 않는다."""
+    invalid = [
+        f"U+{ord(char):04X}" for char in name
+        if char in '<>:"/\\|?*' or unicodedata.category(char) in ("Cc", "Cf")
+    ]
+    reserved = re.fullmatch(r"CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³]", name.split(".")[0], re.IGNORECASE)
+    if not name or name.endswith((" ", ".")) or invalid or reserved:
+        raise ValueError(f"잘못된 저장 경로 구성요소: {name!r}; 잘못된 문자={invalid}")
+
+
+def processed_output_paths(filenames):
+    directory = Path(PROCESSED_DIR)
+    # resolve() 전에 검사해 Windows가 끝 공백/점 등을 정규화하기 전에 발견한다.
+    for part in directory.parts:
+        if part != directory.anchor:
+            validate_output_component(part)
+    directory = directory.resolve()
+    if not directory.is_dir():
+        raise NotADirectoryError(f"processed 저장 폴더가 없거나 디렉터리가 아닙니다: {str(directory)!r}")
+
+    paths = {}
+    for key, filename in filenames.items():
+        validate_output_component(filename)
+        path = directory / filename
+        if path.exists() and not path.is_file():
+            raise IsADirectoryError(f"CSV/JSON 파일 위치에 디렉터리 또는 일반 파일이 아닌 항목이 있습니다: {str(path)!r}")
+        paths[key] = path
+    # Windows는 대소문자를 구분하지 않으므로 중복 저장 대상도 미리 검사한다.
+    if len({str(path).casefold() for path in paths.values()}) != len(paths):
+        raise ValueError(f"중복 저장 경로: {[str(path) for path in paths.values()]!r}")
+    return paths
+
+
+def write_processed_csv(frame, path):
+    """같은 폴더의 임시 파일을 닫은 뒤 교체하여 저장 실패 시 기존 CSV를 보존한다."""
+    path = Path(path)
+    temp_path = None
+    stage = "임시 파일 열기"
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8-sig", newline="",
+            dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False,
+        ) as file:
+            temp_path = Path(file.name)
+            stage = "CSV 쓰기/파일 닫기"
+            frame.to_csv(file, index=False)
+        # Windows에서는 열린 임시 파일을 교체할 수 없으므로 반드시 with 밖에서 실행한다.
+        stage = "기존 CSV 교체"
+        os.replace(temp_path, path)
+    except OSError as error:
+        raise OSError(
+            error.errno,
+            f"CSV 저장 실패: stage={stage}; filename={path.name!r}; "
+            f"path={str(path)!r}; path_length={len(str(path))}; "
+            f"temporary_path={str(temp_path)!r}; winerror={getattr(error, 'winerror', None)}; "
+            f"원인={error}",
+            str(path),
+        ) from error
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                print(f"경고: CSV 임시 파일 정리 실패: {str(temp_path)!r}; {cleanup_error}")
+
+
 def save_dataset(
     dataset,
     output_suffix
 ):
+
+    if not isinstance(output_suffix, str) or not re.fullmatch(r"[A-Za-z0-9_]+", output_suffix):
+        raise ValueError(f"잘못된 output_suffix: {output_suffix!r}; 영문/숫자/밑줄만 허용합니다.")
 
     output_files = {
         "games": f"lck_games_{output_suffix}.csv",
@@ -3592,16 +3974,33 @@ def save_dataset(
         "training": f"lck_training_samples_{output_suffix}.csv",
         "champion_history": (
             f"lck_champion_history_{output_suffix}.csv"
-        )
+        ),
+        "champion_position_history": f"lck_champion_position_history_{output_suffix}.csv",
     }
+
+    # 어떤 파일도 쓰기 전에 전체 저장 대상의 이름과 디렉터리 충돌을 확인한다.
+    paths = processed_output_paths({
+        **output_files,
+        "role_qa": f"role_qa_{output_suffix}.json",
+        "role_mapping_failures": f"role_mapping_failures_{output_suffix}.csv",
+    })
+    qa_path = paths["role_qa"]
+    qa_path.write_text(
+        json.dumps(dataset["role_qa"], ensure_ascii=False, indent=2), encoding="utf-8",
+    )
+    write_processed_csv(dataset["role_mapping_failures"], paths["role_mapping_failures"])
+    if not dataset["role_qa"]["passed"]:
+        raise ValueError(f"Role QA 실패: 데이터셋 저장 중단. 상세 결과: {qa_path}")
 
     for dataset_name, filename in output_files.items():
 
-        dataset[dataset_name].to_csv(
-            PROCESSED_DIR / filename,
-            index=False,
-            encoding="utf-8-sig"
+        # Series ID 등 파생 계산이 끝난 뒤 저장할 사본에서만 제외한다.
+        output_df = dataset[dataset_name].drop(
+            columns=DROP_PROCESSED_COLUMNS,
+            errors="ignore"
         )
+
+        write_processed_csv(output_df, paths[dataset_name])
 
 
 def get_no_ban_statistics(actions):
@@ -3952,6 +4351,35 @@ def main():
     }
 
 
+    role_statistics = {
+        "champion_position_history_rows": len(combined_dataset["champion_position_history"]),
+        "champion_position_history_rows_2026_only": len(only_2026_dataset["champion_position_history"]),
+        "flex_pick_rows": int(combined_dataset["champion_position_history"]["is_flex_before"].sum()),
+        "flex_pick_rows_2026_only": int(only_2026_dataset["champion_position_history"]["is_flex_before"].sum()),
+        "role_mapping_failures": len(combined_dataset["role_mapping_failures"]),
+    }
+    metadata.update(role_statistics)
+    metadata["role_mapping_failures_2026_only"] = len(only_2026_dataset["role_mapping_failures"])
+    metadata["role_qa"] = {
+        "2025_2026": combined_dataset["role_qa"],
+        "2026_only": only_2026_dataset["role_qa"],
+    }
+    metadata["role_feature_policy"] = {
+        "positions": list(POSITIONS),
+        "min_role_games": MIN_ROLE_GAMES,
+        "min_role_rate": MIN_ROLE_RATE,
+        "possible_roles_source": "champion overall history strictly before game date",
+        "no_history_rates": 0.0,
+        "insufficient_history_possible_roles": [],
+        "role_state_rates": "all five roles; no smoothing or final_position fallback",
+        "role_state_timing": "before target action; candidates are historical priors, not forced lane assignments",
+        "label_only_columns": ["final_position", "picked_final_position", "target_position"],
+        "pick_index": "1-based pick slot within side, same as existing champion_history",
+        "mapping_failure_policy": "retain existing draft rows; all game role labels null; skip role history update",
+        "same_timestamp_policy": "snapshot all games before accumulating any of their positions",
+        "independent_2026_only": True,
+    }
+
     with open(
 
         PROCESSED_DIR
@@ -4019,6 +4447,14 @@ def main():
         "Failed Games:",
         len(failed)
     )
+
+    print()
+    print("[Role / Flex]")
+    for key, value in role_statistics.items():
+        print(f"{key}: {value}")
+    print("Role QA: 통합/2026-only 모두 통과")
+    if role_statistics["role_mapping_failures"]:
+        print("경고: Role 매칭 실패 경기의 정답은 비어 있습니다. role_mapping_failures 파일을 확인하세요.")
 
 
     if not failed.empty:
@@ -4095,6 +4531,11 @@ def main():
     print(
         "data/processed/lck_champion_history_2026_only.csv"
     )
+
+    for suffix in ("2025_2026", "2026_only"):
+        print(f"data/processed/lck_champion_position_history_{suffix}.csv")
+        print(f"data/processed/role_qa_{suffix}.json")
+        print(f"data/processed/role_mapping_failures_{suffix}.csv")
 
 
     if not failed.empty:
