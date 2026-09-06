@@ -1,0 +1,24 @@
+{
+  "passed": true,
+  "checks": {
+    "required_columns": true,
+    "one_row_per_champion": true,
+    "role_games_sum_to_total": true,
+    "positive_total_role_rates_sum_to_one": true,
+    "role_rates_match_counts": true,
+    "possible_roles_valid_json": true,
+    "possible_roles_allowed_values": true,
+    "possible_role_count_matches_json": true,
+    "current_is_flex_matches_role_count": true,
+    "possible_roles_match_thresholds": true,
+    "role_mapping_failures_excluded": true,
+    "latest_patch_matches_latest_game": true,
+    "patch_role_games_sum_to_total": true,
+    "patch_role_rates_match_counts": true,
+    "latest_patch_counts": true
+  },
+  "champions_checked": 148,
+  "mapped_position_rows": 10450,
+  "excluded_position_rows": 0,
+  "latest_patch": "16.16"
+}

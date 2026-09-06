@@ -56,6 +56,7 @@ class RoleDatasetTests(unittest.TestCase):
     def dataset(self, rows):
         dataset = builder.process_dataset(self.base(rows))
         self.assertTrue(dataset["role_qa"]["passed"], dataset["role_qa"])
+        self.assertTrue(dataset["current_role_qa"]["passed"], dataset["current_role_qa"])
         return dataset
 
     def test_history_snapshots_flex_patch_team_and_independent_2026(self):
@@ -78,6 +79,18 @@ class RoleDatasetTests(unittest.TestCase):
         self.assertEqual(json.loads(varus["possible_roles_before"]), ["top", "bot"])
         self.assertTrue(varus["is_flex_before"])
         self.assertEqual(varus["final_position"], "bot")
+        current = combined["current_role_summary"].set_index("champion").loc["Varus"]
+        self.assertEqual(current["current_total_games"], 7)
+        self.assertEqual(current["current_top_games"], 3)
+        self.assertEqual(current["current_bot_games"], 4)
+        self.assertEqual(json.loads(current["current_possible_roles"]), ["top", "bot"])
+        self.assertTrue(current["current_is_flex"])
+        self.assertEqual(current["latest_patch"], "16.2")
+        self.assertEqual(current["current_patch_total_games"], 1)
+        self.assertEqual(current["current_patch_bot_games"], 1)
+        only_current = only["current_role_summary"].set_index("champion").loc["Varus"]
+        self.assertEqual(only_current["current_total_games"], 1)
+        self.assertEqual(json.loads(only_current["current_possible_roles"]), [])
         counts = [c for c in only["champion_position_history"] if c.endswith("_games_before")]
         self.assertTrue(only["champion_position_history"][counts].eq(0).all().all())
         first = history[history["game_id"] == "g1"]
@@ -157,6 +170,8 @@ class RoleDatasetTests(unittest.TestCase):
                 self.assertEqual(len(dataset["actions"]), 20)
                 self.assertEqual(len(dataset["role_mapping_failures"]), 1)
                 self.assertTrue(dataset["champion_position_history"]["final_position"].isna().all())
+                self.assertTrue(dataset["current_role_summary"].empty)
+                self.assertTrue(dataset["current_role_qa"]["passed"])
                 self.assertTrue(dataset["training"]["target_position"].isna().all())
                 builder.save_dataset(dataset, "test")
                 self.assertEqual(pd.read_csv(self.output / "role_mapping_failures_test.csv").iloc[0]["year"], 2026)
@@ -201,6 +216,8 @@ class RoleDatasetTests(unittest.TestCase):
         }
         for key, expected in legacy.items():
             pd.testing.assert_frame_equal(extended[key][expected.columns], expected, check_exact=True)
+        current_columns = set(builder.CURRENT_ROLE_SUMMARY_COLUMNS) - {"champion"}
+        self.assertTrue(current_columns.isdisjoint(extended["training"].columns))
         self.assertTrue(extended["role_qa"]["passed"])
 
     def test_red_first_pick_preserves_order_and_position_labels(self):
@@ -229,10 +246,49 @@ class RoleDatasetTests(unittest.TestCase):
         last = dataset["champion_position_history"].query("game_id == 'g7' and champion == 'Varus'").iloc[0]
         self.assertEqual(json.loads(last["possible_roles_before"]), ["bot"])
         self.assertFalse(last["is_flex_before"])
+        current = dataset["current_role_summary"].set_index("champion").loc["Varus"]
+        self.assertEqual(json.loads(current["current_possible_roles"]), ["bot"])
+        self.assertFalse(current["current_is_flex"])
         with patch.object(builder, "MIN_ROLE_GAMES", 1), patch.object(builder, "MIN_ROLE_RATE", 0.5):
             dataset = self.dataset(rows)
             last = dataset["champion_position_history"].query("game_id == 'g7' and champion == 'Varus'").iloc[0]
             self.assertEqual(json.loads(last["possible_roles_before"]), ["bot"])
+
+    def test_current_role_qa_detects_corrupted_summary(self):
+        dataset = self.dataset(oracle_game("g", "2026-01-01T10:00:00Z"))
+        for column, value in (
+            ("current_total_games", 99),
+            ("current_possible_roles", '["adc"]'),
+            ("current_possible_role_count", 2),
+            ("current_is_flex", True),
+            ("current_patch_top_games", 99),
+        ):
+            with self.subTest(column=column):
+                bad = dataset["current_role_summary"].copy(deep=True)
+                bad.loc[0, column] = value
+                qa = builder.validate_current_role_summary(
+                    dataset["champion_position_history"], bad,
+                )
+                self.assertFalse(qa["passed"], qa)
+
+    def test_current_patch_zeros_and_mapping_failure_exclusion(self):
+        history = pd.DataFrame([
+            {"champion": "Older", "final_position": "top", "date": f"2026-01-0{day}", "patch": "16.1"}
+            for day in range(1, 4)
+        ] + [
+            {"champion": "Recent", "final_position": "mid", "date": f"2026-01-0{day}", "patch": "16.2"}
+            for day in range(4, 7)
+        ] + [
+            {"champion": "Unmapped", "final_position": None, "date": "2026-01-07", "patch": "16.3"}
+        ])
+        summary = builder.build_current_role_summary(history).set_index("champion")
+        self.assertEqual(set(summary.index), {"Older", "Recent"})
+        self.assertTrue(summary["latest_patch"].eq("16.3").all())
+        self.assertTrue(summary["current_patch_total_games"].eq(0).all())
+        self.assertTrue(summary.filter(regex=r"^current_patch_.*_rate$").eq(0.0).all().all())
+        self.assertTrue(builder.validate_current_role_summary(
+            history, summary.reset_index(),
+        )["passed"])
 
 
 class DownloadRegressionTests(unittest.TestCase):

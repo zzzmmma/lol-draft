@@ -26,9 +26,10 @@ class DatasetSavingTests(unittest.TestCase):
         return {
             **{key: self.frame.copy() for key in (
                 "games", "actions", "training", "champion_history",
-                "champion_position_history", "role_mapping_failures",
+                "champion_position_history", "current_role_summary", "role_mapping_failures",
             )},
             "role_qa": {"passed": True},
+            "current_role_qa": {"passed": True},
         }
 
     def test_csv_bytes_match_original_pandas_save_on_windows_paths(self):
@@ -108,7 +109,9 @@ class DatasetSavingTests(unittest.TestCase):
             builder.save_dataset(dataset, suffix)
             self.assertTrue((self.root / f"lck_draft_actions_{suffix}.csv").is_file())
             self.assertTrue((self.root / f"lck_training_samples_{suffix}.csv").is_file())
-        self.assertEqual(len(list(self.root.iterdir())), 14)
+            self.assertTrue((self.root / f"lck_current_role_summary_{suffix}.csv").is_file())
+            self.assertTrue((self.root / f"current_role_qa_{suffix}.json").is_file())
+        self.assertEqual(len(list(self.root.iterdir())), 18)
         pd.testing.assert_frame_equal(dataset["actions"], original)
 
 

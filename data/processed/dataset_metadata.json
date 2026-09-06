@@ -1,5 +1,5 @@
 {
-  "processed_at": "2026-09-06T14:28:08.144803",
+  "processed_at": "2026-09-06T22:07:30.612696",
   "source": "Oracle's Elixir",
   "league": "LCK",
   "years": [
@@ -35,6 +35,12 @@
   "champion_position_history_rows_2026_only": 4900,
   "flex_pick_rows": 1073,
   "flex_pick_rows_2026_only": 470,
+  "current_role_summary_champions": 148,
+  "current_role_summary_champions_2026_only": 126,
+  "current_flex_champions": 18,
+  "current_flex_champions_2026_only": 15,
+  "latest_patch": "16.16",
+  "latest_patch_2026_only": "16.16",
   "role_mapping_failures": 0,
   "role_mapping_failures_2026_only": 0,
   "role_qa": {
@@ -89,6 +95,56 @@
       "role_mapping_failure_details": []
     }
   },
+  "current_role_qa": {
+    "2025_2026": {
+      "passed": true,
+      "checks": {
+        "required_columns": true,
+        "one_row_per_champion": true,
+        "role_games_sum_to_total": true,
+        "positive_total_role_rates_sum_to_one": true,
+        "role_rates_match_counts": true,
+        "possible_roles_valid_json": true,
+        "possible_roles_allowed_values": true,
+        "possible_role_count_matches_json": true,
+        "current_is_flex_matches_role_count": true,
+        "possible_roles_match_thresholds": true,
+        "role_mapping_failures_excluded": true,
+        "latest_patch_matches_latest_game": true,
+        "patch_role_games_sum_to_total": true,
+        "patch_role_rates_match_counts": true,
+        "latest_patch_counts": true
+      },
+      "champions_checked": 148,
+      "mapped_position_rows": 10450,
+      "excluded_position_rows": 0,
+      "latest_patch": "16.16"
+    },
+    "2026_only": {
+      "passed": true,
+      "checks": {
+        "required_columns": true,
+        "one_row_per_champion": true,
+        "role_games_sum_to_total": true,
+        "positive_total_role_rates_sum_to_one": true,
+        "role_rates_match_counts": true,
+        "possible_roles_valid_json": true,
+        "possible_roles_allowed_values": true,
+        "possible_role_count_matches_json": true,
+        "current_is_flex_matches_role_count": true,
+        "possible_roles_match_thresholds": true,
+        "role_mapping_failures_excluded": true,
+        "latest_patch_matches_latest_game": true,
+        "patch_role_games_sum_to_total": true,
+        "patch_role_rates_match_counts": true,
+        "latest_patch_counts": true
+      },
+      "champions_checked": 126,
+      "mapped_position_rows": 4900,
+      "excluded_position_rows": 0,
+      "latest_patch": "16.16"
+    }
+  },
   "role_feature_policy": {
     "positions": [
       "top",
@@ -112,6 +168,18 @@
     "pick_index": "1-based pick slot within side, same as existing champion_history",
     "mapping_failure_policy": "retain existing draft rows; all game role labels null; skip role history update",
     "same_timestamp_policy": "snapshot all games before accumulating any of their positions",
+    "independent_2026_only": true
+  },
+  "current_role_summary_policy": {
+    "source": "all mapped final_position rows through the latest game in each dataset",
+    "excluded_rows": "rows whose final_position is missing or outside the five allowed roles",
+    "possible_roles_thresholds": {
+      "min_role_games": 3,
+      "min_role_rate": 0.1
+    },
+    "possible_roles_scope": "all completed mapped games in the dataset",
+    "latest_patch_scope": "patch of the chronologically latest game in the dataset",
+    "training_sample_columns_added": [],
     "independent_2026_only": true
   }
 }

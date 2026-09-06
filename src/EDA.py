@@ -493,6 +493,34 @@ def run_role_eda(dataset_name, history_path, actions_path, training_path, output
     examples = examples.sort_values(["_multi", "Pick 수"], ascending=False).drop(columns="_multi")
     print_table(examples, limit=20)
 
+    target_champions = ["Ambessa", "Aurora", "Anivia"]
+    target_champion_columns = [
+        "date",
+        "patch",
+        "team",
+        "champion",
+        "final_position",
+        "champion_top_games_before",
+        "champion_jng_games_before",
+        "champion_mid_games_before",
+        "champion_bot_games_before",
+        "champion_sup_games_before",
+        "champion_top_rate_before",
+        "champion_jng_rate_before",
+        "champion_mid_rate_before",
+        "champion_bot_rate_before",
+        "champion_sup_rate_before",
+        "possible_roles_before",
+        "possible_role_count_before",
+        "is_flex_before",
+    ]
+    for champion in target_champions:
+        print("\n" + "=" * 60)
+        print(champion)
+        print("=" * 60)
+        rows = history.loc[history["champion"].eq(champion)].reindex(columns=target_champion_columns)
+        print(rows.tail(20).to_string(index=False))
+
     patch_stats = flex_group_statistics(history, "patch")
     patch_stats = patch_stats.reindex(sorted(patch_stats.index, key=patch_sort_key))
     team_stats = flex_group_statistics(history, "team").sort_values(["flex_rate_pct", "flex_picks"], ascending=False)

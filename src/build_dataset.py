@@ -3561,6 +3561,19 @@ POSITION_HISTORY_COLUMNS = [
         + [f"{prefix}_{role}_rate_before" for role in POSITIONS]
     )
 ] + ["possible_roles_before", "possible_role_count_before", "is_flex_before"]
+CURRENT_ROLE_SUMMARY_COLUMNS = [
+    "champion",
+    "current_total_games",
+    *[f"current_{role}_games" for role in POSITIONS],
+    *[f"current_{role}_rate" for role in POSITIONS],
+    "current_possible_roles",
+    "current_possible_role_count",
+    "current_is_flex",
+    "latest_patch",
+    "current_patch_total_games",
+    *[f"current_patch_{role}_games" for role in POSITIONS],
+    *[f"current_patch_{role}_rate" for role in POSITIONS],
+]
 ROLE_FAILURE_COLUMNS = [
     "year", "date", "game_id", "blue_team", "red_team", "category", "reason",
 ]
@@ -3680,6 +3693,93 @@ def build_champion_position_history(games, role_sources):
         pd.DataFrame(records, columns=POSITION_HISTORY_COLUMNS),
         pd.DataFrame(failures, columns=ROLE_FAILURE_COLUMNS),
     )
+
+
+def latest_patch_from_position_history(position_history):
+    """Position History에서 시간상 마지막 경기의 Patch를 반환한다."""
+    if position_history.empty:
+        return None
+    dates = pd.to_datetime(position_history["date"], errors="coerce", utc=True)
+    if dates.notna().sum() == 0:
+        return None
+    latest_rows = position_history.loc[dates.eq(dates.max())]
+    order_columns = [
+        column for column in ("series_id", "game_number", "game_id", "pick_index")
+        if column in latest_rows
+    ]
+    if order_columns:
+        latest_rows = latest_rows.sort_values(order_columns, kind="stable")
+    return clean_value(latest_rows.iloc[-1]["patch"])
+
+
+def current_role_counts(position_history, champions, *, patch=None):
+    """Role Mapping에 성공한 최종 Position만 Champion별로 집계한다."""
+    source = position_history.copy()
+    source["_champion_key"] = source["champion"].map(clean_value)
+    valid = source[
+        source["_champion_key"].notna()
+        & source["final_position"].isin(POSITIONS)
+    ]
+    if patch is not None:
+        valid = valid[valid["patch"].map(clean_value).eq(patch)]
+    counts = pd.crosstab(valid["_champion_key"], valid["final_position"])
+    return counts.reindex(index=champions, columns=POSITIONS, fill_value=0).astype("int64")
+
+
+def build_current_role_summary(position_history):
+    """Dataset 마지막 경기까지의 완료된 Role 결과로 현재 추천용 요약을 만든다."""
+    if MIN_ROLE_GAMES < 1 or not 0 < MIN_ROLE_RATE <= 1:
+        raise ValueError("MIN_ROLE_GAMES >= 1, 0 < MIN_ROLE_RATE <= 1 이어야 합니다.")
+    required = {"champion", "final_position", "date", "patch"}
+    missing = sorted(required - set(position_history.columns))
+    if missing:
+        raise ValueError(f"Current Role Summary 필수 컬럼 누락: {missing}")
+
+    champions = sorted({
+        champion
+        for champion in position_history.loc[
+            position_history["final_position"].isin(POSITIONS), "champion"
+        ].map(clean_value)
+        if champion is not None
+    }, key=str.casefold)
+    latest_patch = latest_patch_from_position_history(position_history)
+    overall_counts = current_role_counts(position_history, champions)
+    patch_counts = (
+        current_role_counts(position_history, champions, patch=latest_patch)
+        if latest_patch is not None
+        else pd.DataFrame(0, index=champions, columns=POSITIONS, dtype="int64")
+    )
+
+    records = []
+    for champion in champions:
+        total = int(overall_counts.loc[champion].sum())
+        patch_total = int(patch_counts.loc[champion].sum())
+        record = {
+            "champion": champion,
+            "current_total_games": total,
+        }
+        for role in POSITIONS:
+            games = int(overall_counts.at[champion, role])
+            record[f"current_{role}_games"] = games
+            record[f"current_{role}_rate"] = games / total if total else 0.0
+        possible_roles = [
+            role for role in POSITIONS
+            if record[f"current_{role}_games"] >= MIN_ROLE_GAMES
+            and record[f"current_{role}_rate"] >= MIN_ROLE_RATE
+        ]
+        record.update({
+            "current_possible_roles": json.dumps(possible_roles),
+            "current_possible_role_count": len(possible_roles),
+            "current_is_flex": len(possible_roles) >= 2,
+            "latest_patch": latest_patch,
+            "current_patch_total_games": patch_total,
+        })
+        for role in POSITIONS:
+            games = int(patch_counts.at[champion, role])
+            record[f"current_patch_{role}_games"] = games
+            record[f"current_patch_{role}_rate"] = games / patch_total if patch_total else 0.0
+        records.append(record)
+    return pd.DataFrame(records, columns=CURRENT_ROLE_SUMMARY_COLUMNS)
 
 
 def role_state_entry(row):
@@ -3837,6 +3937,136 @@ def validate_role_dataset(dataset, role_sources):
     }
 
 
+def validate_current_role_summary(position_history, summary):
+    """현재 Role/Flex 요약의 집계, 비율, JSON 및 기준 적용을 검증한다."""
+    missing = sorted(set(CURRENT_ROLE_SUMMARY_COLUMNS) - set(summary.columns))
+    checks = {"required_columns": not missing}
+    if missing:
+        return {
+            "passed": False,
+            "checks": checks,
+            "champions_checked": len(summary),
+            "mapped_position_rows": int(position_history["final_position"].isin(POSITIONS).sum()),
+            "excluded_position_rows": int((~position_history["final_position"].isin(POSITIONS)).sum()),
+            "missing_columns": missing,
+        }
+
+    champions = sorted({
+        champion
+        for champion in position_history.loc[
+            position_history["final_position"].isin(POSITIONS), "champion"
+        ].map(clean_value)
+        if champion is not None
+    }, key=str.casefold)
+    actual_champions = summary["champion"].map(clean_value).tolist()
+    structure_ok = (
+        len(actual_champions) == len(set(actual_champions))
+        and sorted(actual_champions, key=lambda value: (value is None, str(value).casefold())) == champions
+    )
+    checks["one_row_per_champion"] = structure_ok
+
+    role_game_columns = [f"current_{role}_games" for role in POSITIONS]
+    role_rate_columns = [f"current_{role}_rate" for role in POSITIONS]
+    patch_game_columns = [f"current_patch_{role}_games" for role in POSITIONS]
+    patch_rate_columns = [f"current_patch_{role}_rate" for role in POSITIONS]
+    total = pd.to_numeric(summary["current_total_games"], errors="coerce")
+    role_games = summary[role_game_columns].apply(pd.to_numeric, errors="coerce")
+    role_rates = summary[role_rate_columns].apply(pd.to_numeric, errors="coerce")
+    checks["role_games_sum_to_total"] = role_games.sum(axis=1).eq(total).all()
+    checks["positive_total_role_rates_sum_to_one"] = np.allclose(
+        role_rates.loc[total.gt(0)].sum(axis=1), 1.0, rtol=0, atol=1e-12,
+    )
+    expected_rates = role_games.div(total.replace(0, np.nan), axis=0).fillna(0.0)
+    expected_rates.columns = role_rate_columns
+    checks["role_rates_match_counts"] = np.allclose(
+        role_rates.to_numpy(dtype=float), expected_rates.to_numpy(dtype=float),
+        rtol=0, atol=1e-12,
+    )
+
+    parsed_roles = []
+    json_ok = True
+    for value in summary["current_possible_roles"]:
+        try:
+            roles = json.loads(value)
+            json_ok = json_ok and isinstance(roles, list)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            roles = None
+            json_ok = False
+        parsed_roles.append(roles)
+    checks["possible_roles_valid_json"] = json_ok
+    checks["possible_roles_allowed_values"] = json_ok and all(
+        all(isinstance(role, str) and role in POSITIONS for role in roles)
+        for roles in parsed_roles
+    )
+    checks["possible_role_count_matches_json"] = json_ok and all(
+        row.current_possible_role_count == len(roles)
+        for row, roles in zip(summary.itertuples(), parsed_roles)
+    )
+    checks["current_is_flex_matches_role_count"] = all(
+        row.current_is_flex == (row.current_possible_role_count >= 2)
+        for row in summary.itertuples()
+    )
+    checks["possible_roles_match_thresholds"] = json_ok and all(
+        roles == [
+            role for role in POSITIONS
+            if row[f"current_{role}_games"] >= MIN_ROLE_GAMES
+            and row[f"current_{role}_rate"] >= MIN_ROLE_RATE
+        ]
+        for row, roles in zip(summary.to_dict("records"), parsed_roles)
+    )
+
+    if structure_ok:
+        indexed = summary.set_index("champion")
+        expected_counts = current_role_counts(position_history, champions)
+        checks["role_mapping_failures_excluded"] = (
+            np.array_equal(
+                indexed[role_game_columns].to_numpy(dtype=np.int64),
+                expected_counts.to_numpy(dtype=np.int64),
+            )
+            and int(total.sum()) == int(position_history["final_position"].isin(POSITIONS).sum())
+        )
+    else:
+        checks["role_mapping_failures_excluded"] = False
+
+    latest_patch = latest_patch_from_position_history(position_history)
+    checks["latest_patch_matches_latest_game"] = all(
+        clean_value(value) == latest_patch for value in summary["latest_patch"]
+    )
+    patch_total = pd.to_numeric(summary["current_patch_total_games"], errors="coerce")
+    patch_games = summary[patch_game_columns].apply(pd.to_numeric, errors="coerce")
+    patch_rates = summary[patch_rate_columns].apply(pd.to_numeric, errors="coerce")
+    checks["patch_role_games_sum_to_total"] = patch_games.sum(axis=1).eq(patch_total).all()
+    expected_patch_rates = patch_games.div(patch_total.replace(0, np.nan), axis=0).fillna(0.0)
+    expected_patch_rates.columns = patch_rate_columns
+    checks["patch_role_rates_match_counts"] = np.allclose(
+        patch_rates.to_numpy(dtype=float), expected_patch_rates.to_numpy(dtype=float),
+        rtol=0, atol=1e-12,
+    )
+    if structure_ok:
+        expected_patch_counts = (
+            current_role_counts(position_history, champions, patch=latest_patch)
+            if latest_patch is not None
+            else pd.DataFrame(0, index=champions, columns=POSITIONS, dtype="int64")
+        )
+        checks["latest_patch_counts"] = np.array_equal(
+            summary.set_index("champion")[patch_game_columns].to_numpy(dtype=np.int64),
+            expected_patch_counts.to_numpy(dtype=np.int64),
+        )
+    else:
+        checks["latest_patch_counts"] = False
+
+    checks = {key: bool(value) for key, value in checks.items()}
+    valid_positions = position_history["final_position"].isin(POSITIONS)
+    return {
+        "passed": all(checks.values()),
+        "checks": checks,
+        "champions_checked": len(summary),
+        "mapped_position_rows": int(valid_positions.sum()),
+        "excluded_position_rows": int((~valid_positions).sum()),
+        "latest_patch": latest_patch,
+    }
+
+
 def process_dataset(base_games):
 
     role_sources = {
@@ -3869,6 +4099,7 @@ def process_dataset(base_games):
     )
 
     position_history, role_failures = build_champion_position_history(games, role_sources)
+    current_role_summary = build_current_role_summary(position_history)
     actions, training = add_role_columns(actions, training, position_history)
 
     dataset = {
@@ -3877,9 +4108,11 @@ def process_dataset(base_games):
         "training": training,
         "champion_history": champion_history,
         "champion_position_history": position_history,
+        "current_role_summary": current_role_summary,
         "role_mapping_failures": role_failures,
     }
     dataset["role_qa"] = validate_role_dataset(dataset, role_sources)
+    dataset["current_role_qa"] = validate_current_role_summary(position_history, current_role_summary)
     return dataset
 
 
@@ -3976,21 +4209,29 @@ def save_dataset(
             f"lck_champion_history_{output_suffix}.csv"
         ),
         "champion_position_history": f"lck_champion_position_history_{output_suffix}.csv",
+        "current_role_summary": f"lck_current_role_summary_{output_suffix}.csv",
     }
 
     # 어떤 파일도 쓰기 전에 전체 저장 대상의 이름과 디렉터리 충돌을 확인한다.
     paths = processed_output_paths({
         **output_files,
         "role_qa": f"role_qa_{output_suffix}.json",
+        "current_role_qa": f"current_role_qa_{output_suffix}.json",
         "role_mapping_failures": f"role_mapping_failures_{output_suffix}.csv",
     })
     qa_path = paths["role_qa"]
     qa_path.write_text(
         json.dumps(dataset["role_qa"], ensure_ascii=False, indent=2), encoding="utf-8",
     )
+    current_qa_path = paths["current_role_qa"]
+    current_qa_path.write_text(
+        json.dumps(dataset["current_role_qa"], ensure_ascii=False, indent=2), encoding="utf-8",
+    )
     write_processed_csv(dataset["role_mapping_failures"], paths["role_mapping_failures"])
     if not dataset["role_qa"]["passed"]:
         raise ValueError(f"Role QA 실패: 데이터셋 저장 중단. 상세 결과: {qa_path}")
+    if not dataset["current_role_qa"]["passed"]:
+        raise ValueError(f"Current Role QA 실패: 데이터셋 저장 중단. 상세 결과: {current_qa_path}")
 
     for dataset_name, filename in output_files.items():
 
@@ -4148,6 +4389,7 @@ def main():
     combined_champion_history = (
         combined_dataset["champion_history"]
     )
+    combined_current_role_summary = combined_dataset["current_role_summary"]
 
     only_2026_processed_games = only_2026_dataset["games"]
     only_2026_actions = only_2026_dataset["actions"]
@@ -4155,6 +4397,7 @@ def main():
     only_2026_champion_history = (
         only_2026_dataset["champion_history"]
     )
+    only_2026_current_role_summary = only_2026_dataset["current_role_summary"]
 
 
     # ========================================================
@@ -4356,6 +4599,12 @@ def main():
         "champion_position_history_rows_2026_only": len(only_2026_dataset["champion_position_history"]),
         "flex_pick_rows": int(combined_dataset["champion_position_history"]["is_flex_before"].sum()),
         "flex_pick_rows_2026_only": int(only_2026_dataset["champion_position_history"]["is_flex_before"].sum()),
+        "current_role_summary_champions": len(combined_current_role_summary),
+        "current_role_summary_champions_2026_only": len(only_2026_current_role_summary),
+        "current_flex_champions": int(combined_current_role_summary["current_is_flex"].sum()),
+        "current_flex_champions_2026_only": int(only_2026_current_role_summary["current_is_flex"].sum()),
+        "latest_patch": combined_dataset["current_role_qa"]["latest_patch"],
+        "latest_patch_2026_only": only_2026_dataset["current_role_qa"]["latest_patch"],
         "role_mapping_failures": len(combined_dataset["role_mapping_failures"]),
     }
     metadata.update(role_statistics)
@@ -4363,6 +4612,10 @@ def main():
     metadata["role_qa"] = {
         "2025_2026": combined_dataset["role_qa"],
         "2026_only": only_2026_dataset["role_qa"],
+    }
+    metadata["current_role_qa"] = {
+        "2025_2026": combined_dataset["current_role_qa"],
+        "2026_only": only_2026_dataset["current_role_qa"],
     }
     metadata["role_feature_policy"] = {
         "positions": list(POSITIONS),
@@ -4377,6 +4630,18 @@ def main():
         "pick_index": "1-based pick slot within side, same as existing champion_history",
         "mapping_failure_policy": "retain existing draft rows; all game role labels null; skip role history update",
         "same_timestamp_policy": "snapshot all games before accumulating any of their positions",
+        "independent_2026_only": True,
+    }
+    metadata["current_role_summary_policy"] = {
+        "source": "all mapped final_position rows through the latest game in each dataset",
+        "excluded_rows": "rows whose final_position is missing or outside the five allowed roles",
+        "possible_roles_thresholds": {
+            "min_role_games": MIN_ROLE_GAMES,
+            "min_role_rate": MIN_ROLE_RATE,
+        },
+        "possible_roles_scope": "all completed mapped games in the dataset",
+        "latest_patch_scope": "patch of the chronologically latest game in the dataset",
+        "training_sample_columns_added": [],
         "independent_2026_only": True,
     }
 
@@ -4450,9 +4715,26 @@ def main():
 
     print()
     print("[Role / Flex]")
-    for key, value in role_statistics.items():
-        print(f"{key}: {value}")
+    print(f"Champion Position History Rows: {role_statistics['champion_position_history_rows']}")
+    print(
+        "Champion Position History Rows (2026 Only): "
+        f"{role_statistics['champion_position_history_rows_2026_only']}"
+    )
+    print(f"Historical Flex Pick Rows: {role_statistics['flex_pick_rows']}")
+    print(
+        "Historical Flex Pick Rows (2026 Only): "
+        f"{role_statistics['flex_pick_rows_2026_only']}"
+    )
+    print(f"Current Flex Champions: {role_statistics['current_flex_champions']}")
+    print(
+        "Current Flex Champions (2026 Only): "
+        f"{role_statistics['current_flex_champions_2026_only']}"
+    )
+    print(f"Latest Patch: {role_statistics['latest_patch']}")
+    print(f"Latest Patch (2026 Only): {role_statistics['latest_patch_2026_only']}")
+    print(f"Role Mapping Failures: {role_statistics['role_mapping_failures']}")
     print("Role QA: 통합/2026-only 모두 통과")
+    print("Current Role QA: 통합/2026-only 모두 통과")
     if role_statistics["role_mapping_failures"]:
         print("경고: Role 매칭 실패 경기의 정답은 비어 있습니다. role_mapping_failures 파일을 확인하세요.")
 
@@ -4534,7 +4816,9 @@ def main():
 
     for suffix in ("2025_2026", "2026_only"):
         print(f"data/processed/lck_champion_position_history_{suffix}.csv")
+        print(f"data/processed/lck_current_role_summary_{suffix}.csv")
         print(f"data/processed/role_qa_{suffix}.json")
+        print(f"data/processed/current_role_qa_{suffix}.json")
         print(f"data/processed/role_mapping_failures_{suffix}.csv")
 
 
