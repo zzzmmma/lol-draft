@@ -13,8 +13,6 @@ PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
 EDA_DIR = PROJECT_ROOT / "data" / "eda"
 NO_BAN_TOKEN = "NO_BAN"
 POSITIONS = ("top", "jng", "mid", "bot", "sup")
-MIN_ROLE_GAMES = 3
-MIN_ROLE_RATE = 0.10
 FIRST_GAME_POSITION_COUNTS = [
     "champion_total_position_games_before",
     *[f"champion_{role}_games_before" for role in POSITIONS],
@@ -38,45 +36,6 @@ HISTORY_RATE_CHECKS = [
 def project_path(path):
     path = Path(path)
     return path if path.is_absolute() else PROJECT_ROOT / path
-
-
-def load_current_flex_policy(metadata_path=None):
-    """Current Flex 표시 기준만 읽는다. Historical Flex 값은 재계산하지 않는다."""
-    path = project_path(metadata_path) if metadata_path is not None else PROCESSED_DIR / "dataset_metadata.json"
-    try:
-        metadata = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(metadata, dict) or not isinstance(metadata.get("role_feature_policy"), dict):
-            raise ValueError("role_feature_policy 객체 누락 또는 형식 오류")
-        policy = metadata["role_feature_policy"]
-        min_games = policy["min_role_games"]
-        min_rate = policy["min_role_rate"]
-        if (isinstance(min_games, bool) or not isinstance(min_games, int) or min_games < 1
-                or isinstance(min_rate, bool) or not isinstance(min_rate, (int, float))
-                or not math.isfinite(min_rate) or not 0 < min_rate <= 1):
-            raise ValueError("min_role_games는 양의 정수, min_role_rate는 0 초과 1 이하이어야 합니다")
-    except (OSError, UnicodeError, ValueError, KeyError) as error:
-        print(f"Current Flex 기준값 읽기 실패: {path} ({error}). "
-              f"기본값 {MIN_ROLE_GAMES}회 / {MIN_ROLE_RATE:.0%}를 사용합니다.")
-        return MIN_ROLE_GAMES, MIN_ROLE_RATE
-    return min_games, min_rate
-
-
-def current_flex_statistics(actual_counts, min_role_games, min_role_rate):
-    """전체 완료 경기의 실제 Position을 요약한다. 학습 입력으로 저장하지 않는다."""
-    counts = actual_counts.reindex(columns=POSITIONS, fill_value=0)
-    totals = counts.sum(axis=1)
-    rates = counts.div(totals.where(totals.gt(0)), axis=0).fillna(0.0)
-    stats = pd.DataFrame({"current_total_games": totals})
-    for role in POSITIONS:
-        stats[f"current_{role}_games"] = counts[role]
-        stats[f"current_{role}_rate"] = rates[role]
-    eligible = counts.ge(min_role_games) & rates.ge(min_role_rate)
-    stats["current_possible_roles"] = [
-        [role for role in POSITIONS if row[role]] for _, row in eligible.iterrows()
-    ]
-    stats["current_possible_role_count"] = eligible.sum(axis=1)
-    stats["current_is_flex"] = stats["current_possible_role_count"].ge(2)
-    return stats
 
 
 def print_table(table, limit=None):
@@ -309,7 +268,7 @@ def missing_role(values):
 def audit_role_data(history, actions, training, *, only_2026=False):
     checks = {}
     details = ["game_id", "side", "champion", "step", "target_champion"]
-    print_section("R7", "Position label 및 possible_roles QA")
+    print_section("R6", "Position label 및 possible_roles QA")
     for name, frame, action_column, label_column in (
         ("Actions", actions, "action", "picked_final_position"),
         ("Training", training, "next_action", "target_position"),
@@ -377,7 +336,7 @@ def audit_role_data(history, actions, training, *, only_2026=False):
             ["position_rows", "pick_rows"],
         )
 
-    print_section("R8", "Training Draft Role 상태 QA")
+    print_section("R7", "Training Draft Role 상태 QA")
     for side in ("BLUE", "RED"):
         column = f"{side.lower()}_role_state"
         if column not in training:
@@ -418,7 +377,7 @@ def audit_role_data(history, actions, training, *, only_2026=False):
     leakage_checked = False
     first_game_ids = []
     if only_2026:
-        print_section("R9", "2026-only 연도 및 첫 경기 Position History 누수 검사")
+        print_section("R8", "2026-only 연도 및 첫 경기 Position History 누수 검사")
         for name, frame in (("History", history), ("Actions", actions), ("Training", training)):
             checks[f"2026-only {name} 다른 연도/연도 누락"] = print_role_issue(
                 f"2026-only {name} 다른 연도/연도 누락", frame,
@@ -457,8 +416,8 @@ def save_patch_flex_chart(stats, dataset_name, output_path):
     positions = list(range(len(stats)))
     count_ax.bar(positions, stats["flex_picks"], color="#3875b8")
     rate_ax.bar(positions, stats["flex_rate_pct"], color="#39836c")
-    count_ax.set_ylabel("Historical Flex Pick Count")
-    rate_ax.set_ylabel("Historical Flex Pick Rate")
+    count_ax.set_ylabel("Flex Pick Count")
+    rate_ax.set_ylabel("Flex Pick Rate")
     rate_ax.yaxis.set_major_formatter(PercentFormatter(xmax=100))
     rate_ax.set_ylim(0, 100)
     rate_ax.set_xticks(positions, labels=stats.index.astype(str), rotation=60, ha="right")
@@ -468,7 +427,7 @@ def save_patch_flex_chart(stats, dataset_name, output_path):
         ax.spines[["top", "right"]].set_visible(False)
         if stats.empty:
             ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
-    figure.suptitle(f"{dataset_name} - Historical Flex Picks by Patch", fontsize=15)
+    figure.suptitle(f"{dataset_name} - Flex Picks by Patch", fontsize=15)
     figure.savefig(output_path, dpi=160)
     figure.clear()
 
@@ -510,8 +469,7 @@ def run_role_eda(dataset_name, history_path, actions_path, training_path, output
     multi = actual_rates[actual_rates["position_count"] >= 2].sort_values(["position_count", "picks"], ascending=False)
     print(f"\n실제로 여러 Position에서 사용된 챔피언: {len(multi)}종 (최대 20종 출력)")
     print_table(multi, limit=20)
-    print("※ 한 번이라도 2개 이상의 Position에서 사용된 Champion을 의미하며, 현재 Flex 판정과는 별도이다.")
-    print("실제 Position 분포는 정상 Position 기록 기준의 사후 분석입니다. Historical Flex 판단과 구분합니다.")
+    print("실제 Position 분포는 정상 Position 기록 기준의 사후 분석입니다. 경기 이전 Flex 판단과 구분합니다.")
 
     role_counts = pd.to_numeric(history["possible_role_count_before"], errors="coerce")
     distribution = pd.Series({"0 roles": int(role_counts.eq(0).sum()), "1 role": int(role_counts.eq(1).sum()),
@@ -521,17 +479,15 @@ def run_role_eda(dataset_name, history_path, actions_path, training_path, output
     flex_count = len(flex)
     flex_rate = flex_count / total * 100 if total else 0.0
     flex_champions = flex["champion"].value_counts()
-    print_section("R3", "경기 이전 Possible Role 개수 및 Historical Flex Pick")
+    print_section("R3", "경기 이전 Possible Role 개수 및 Flex Pick")
     print_table(distribution.rename("Pick 수"))
     print(f"Role 개수 분포에서 제외된 비정상 값: {total - int(distribution.sum()):,}행")
-    print(f"Historical Flex Pick 수: {flex_count:,} / 전체 Pick: {total:,}")
-    print(f"Historical Flex Pick 비율 (%): {flex_rate:.2f}%")
-    print(f"Historical Flex Champion 수: {len(flex_champions)}")
-    print("Historical Flex는 각 과거 경기 직전 이력으로 만든 is_flex_before=True 집계이며, 학습/백테스트 관련 EDA입니다.")
+    print(f"Flex Pick 수: {flex_count:,} / 전체 Pick: {total:,}")
+    print(f"Flex Pick 비율: {flex_rate:.2f}% / Flex Champion 수: {len(flex_champions)}")
     print("표본 부족 등으로 0 roles인 경우 Role 미확인 상태이며, 확정 단일 Role로 취급하지 않습니다.")
-    print("\nHistorical Flex Pick Top 20 (경기 이전 is_flex_before=True 횟수):")
-    print_table(flex_champions.rename("Historical Flex Pick 수"), limit=20)
-    print("\nChampion별 Historical possible role 예시 (복수 Role 우선, 최대 20개 조합):")
+    print("\nFlex Champion Top 20 (경기 이전 is_flex_before=True 횟수):")
+    print_table(flex_champions.rename("Flex Pick 수"), limit=20)
+    print("\nChampion별 possible role 예시 (복수 Role 우선, 최대 20개 조합):")
     examples = history.groupby(["champion", "possible_roles_before", "possible_role_count_before"], dropna=False).size().rename("Pick 수").reset_index()
     examples["_multi"] = pd.to_numeric(examples["possible_role_count_before"], errors="coerce").ge(2)
     examples = examples.sort_values(["_multi", "Pick 수"], ascending=False).drop(columns="_multi")
@@ -583,31 +539,27 @@ def run_role_eda(dataset_name, history_path, actions_path, training_path, output
     patch_stats = flex_group_statistics(history, "patch")
     patch_stats = patch_stats.reindex(sorted(patch_stats.index, key=patch_sort_key))
     team_stats = flex_group_statistics(history, "team").sort_values(["flex_rate_pct", "flex_picks"], ascending=False)
-    print_section("R5", "Patch별 Historical Flex Pick 수 / 비율 (%)")
+    print_section("R4", "Patch별 Flex Pick 수 / 비율 (%)")
     print_table(patch_stats, limit=20)
-    print_section("R6", "팀별 Historical Flex Pick 사용 수 / 비율 (%)")
+    print_section("R5", "팀별 Flex Pick 사용 수 / 비율 (%)")
     print_table(team_stats, limit=20)
-    print("Patch/팀별 Historical Flex 비율 분모: 해당 Patch/팀의 전체 Pick 수")
+    print("Patch/팀별 Flex 비율 분모: 해당 Patch/팀의 전체 Pick 수")
 
     qa = audit_role_data(history, actions, training, only_2026=only_2026)
     (output_dir / "role_qa.json").write_text(json.dumps(qa, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Role QA: {'통과' if qa['passed'] else '이상 발견 — 위 오류 행과 role_qa.json 확인'}")
     charts = [
         (positions.rename(index=str.upper), "Position Pick Distribution", "Pick Count", "position_distribution.png", {}),
-        (flex_champions.head(20), "Historical Flex Pick Top 20", "Historical Flex Pick Count", "historical_flex_picks_top20.png", {"horizontal": True}),
-        (distribution, "Historical Possible Role Count Distribution", "Pick Count", "possible_role_count.png", {}),
-        (team_stats["flex_rate_pct"], "Team Historical Flex Pick Rate", "Historical Flex Pick Rate", "team_flex_rate.png", {"horizontal": True, "percentage": True}),
+        (flex_champions.head(20), "Flex Champion Top 20", "Flex Pick Count", "flex_champions_top20.png", {"horizontal": True}),
+        (distribution, "Possible Role Count Distribution", "Pick Count", "possible_role_count.png", {}),
+        (team_stats["flex_rate_pct"], "Team Flex Pick Rate", "Flex Pick Rate", "team_flex_rate.png", {"horizontal": True, "percentage": True}),
     ]
-    if not current_flex.empty:
-        charts.append((current_flex["current_total_games"], "Current Flex Champions", "Total Pick Count",
-                       "current_flex_champions.png", {"horizontal": True, "colors": "#39836c"}))
     for values, title, ylabel, filename, options in charts:
         save_bar_chart(values, f"{dataset_name} - {title}", ylabel, output_dir / filename, **options)
     save_patch_flex_chart(patch_stats, dataset_name, output_dir / "flex_by_patch.png")
-    print(f"Role/Flex 그래프 {len(charts) + 1}개 및 QA 보고서 저장: {output_dir}")
-    return pd.Series({"Historical Flex Pick 수": flex_count, "Historical Flex Pick 비율 (%)": flex_rate,
-                      "Historical Flex Champion 수": len(flex_champions),
-                      "Current Flex Champion 수": len(current_flex),
+    print(f"Role/Flex 그래프 5개 및 QA 보고서 저장: {output_dir}")
+    return pd.Series({"Flex Pick 수": flex_count, "Flex Pick 비율 (%)": flex_rate,
+                      "Flex Champion 수": len(flex_champions),
                       **{f"{role.upper()} Pick 수": int(positions[role]) for role in POSITIONS}}, name=dataset_name)
 
 
@@ -631,7 +583,7 @@ def main():
         summaries.append(pd.concat([summary, role_summary]))
     comparison = pd.concat(summaries, axis=1)
     decimal_rows = {"평균 Draft Action 수", "Blue 승률 (%)", "Red 승률 (%)", "평균 Series 경기 수"}
-    decimal_rows.add("Historical Flex Pick 비율 (%)")
+    decimal_rows.add("Flex Pick 비율 (%)")
     formatted = comparison.astype(object)
     for item in comparison.index:
         formatted.loc[item] = comparison.loc[item].map(
