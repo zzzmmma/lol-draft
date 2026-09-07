@@ -18,8 +18,8 @@
     "target_position_labels_pick_only": true,
     "role_states_use_prior_history_and_prior_picks_only": true
   },
-  "games_checked": 490,
-  "mapped_games": 490,
+  "games_checked": 494,
+  "mapped_games": 494,
   "role_mapping_failures": 0,
   "role_mapping_failure_details": []
 }

@@ -1,5 +1,9 @@
 {
+<<<<<<< HEAD
   "processed_at": "2026-09-06T22:07:30.612696",
+=======
+  "processed_at": "2026-09-07T08:43:44.423820",
+>>>>>>> 4c804ad (0907)
   "source": "Oracle's Elixir",
   "league": "LCK",
   "years": [
@@ -10,27 +14,28 @@
   "2026_source_google_drive_id": "1hnpbrUpBMS1TZI7IovfpKeZfWJH1Aptm",
   "source_sha256": {
     "2025": "c9a158b9e0a965a47d31d3674c127a26f75e6c91a324bd1858e4784b1336214a",
-    "2026": "7851b882b95fb8fc5ae8b9983f6c243ebcd001529e577f348e1af957b39494c7"
+    "2026": "07f682890a3eefcc6150713f6b5fdd918d55572afd27b265347a2a122b54b207"
   },
   "no_ban_token": "NO_BAN",
-  "raw_lck_rows": 12540,
-  "games_total": 1045,
+  "raw_lck_rows": 12588,
+  "games_total": 1049,
   "games_2025": 555,
-  "games_2026": 490,
-  "draft_actions": 20900,
-  "training_samples": 20900,
-  "champion_history_rows": 10450,
+  "games_2026": 494,
+  "draft_actions": 20980,
+  "training_samples": 20980,
+  "champion_history_rows": 10490,
   "no_ban_actions": 1,
   "games_with_no_ban": 1,
-  "games_2026_only": 490,
-  "draft_actions_2026_only": 9800,
-  "training_samples_2026_only": 9800,
-  "champion_history_rows_2026_only": 4900,
+  "games_2026_only": 494,
+  "draft_actions_2026_only": 9880,
+  "training_samples_2026_only": 9880,
+  "champion_history_rows_2026_only": 4940,
   "no_ban_actions_2026_only": 0,
   "games_with_no_ban_2026_only": 0,
   "failed_games": 0,
   "failed_games_2025": 0,
   "failed_games_2026": 0,
+<<<<<<< HEAD
   "champion_position_history_rows": 10450,
   "champion_position_history_rows_2026_only": 4900,
   "flex_pick_rows": 1073,
@@ -41,6 +46,12 @@
   "current_flex_champions_2026_only": 15,
   "latest_patch": "16.16",
   "latest_patch_2026_only": "16.16",
+=======
+  "champion_position_history_rows": 10490,
+  "champion_position_history_rows_2026_only": 4940,
+  "flex_pick_rows": 1077,
+  "flex_pick_rows_2026_only": 474,
+>>>>>>> 4c804ad (0907)
   "role_mapping_failures": 0,
   "role_mapping_failures_2026_only": 0,
   "role_qa": {
@@ -64,8 +75,8 @@
         "target_position_labels_pick_only": true,
         "role_states_use_prior_history_and_prior_picks_only": true
       },
-      "games_checked": 1045,
-      "mapped_games": 1045,
+      "games_checked": 1049,
+      "mapped_games": 1049,
       "role_mapping_failures": 0,
       "role_mapping_failure_details": []
     },
@@ -89,8 +100,8 @@
         "target_position_labels_pick_only": true,
         "role_states_use_prior_history_and_prior_picks_only": true
       },
-      "games_checked": 490,
-      "mapped_games": 490,
+      "games_checked": 494,
+      "mapped_games": 494,
       "role_mapping_failures": 0,
       "role_mapping_failure_details": []
     }
